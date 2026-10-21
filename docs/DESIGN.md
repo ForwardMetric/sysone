@@ -654,6 +654,10 @@ head and adapters but can reach several GB with `tuning="full"`. `training_state
 - without one, it warm-starts: the trained weights are kept, and a new optimizer and schedule
   start from zero for `epochs` more epochs.
 
+Because `training_state="auto"` may or may not have saved the state, `fit` always logs which case
+applies when it starts, e.g. `resuming at epoch 12 of 20` or
+`warm start (no saved training state): training 20 epochs`.
+
 Either way, a structural parameter changed since the last fit (base model, layers, layout, head
 shape, token limits, tuning mode) starts over instead, as before.
 
