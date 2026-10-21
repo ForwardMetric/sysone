@@ -128,10 +128,14 @@ class Architecture(ABC):
         layer_types = set(getattr(model.config, "layer_types", None) or ["full_attention"])
         masks = {}
         for layer_type in layer_types:
-            window = model.config.sliding_window if layer_type == "sliding_attention" else None
+            window = self.sliding_window(model) if layer_type == "sliding_attention" else None
             masks[layer_type] = attention_mask(real, position_ids, option_ids, causal=self.causal,
                                                sliding_window=window)
         return masks
+
+    def sliding_window(self, model: nn.Module) -> int:
+        """How many positions a sliding-attention layer sees on each side."""
+        return int(model.config.sliding_window)
 
     def hidden_states(self, model: nn.Module, batch: dict[str, torch.Tensor]) -> torch.Tensor:
         masks = self.attention(model, batch["real"], batch["position_ids"], batch["option_ids"])

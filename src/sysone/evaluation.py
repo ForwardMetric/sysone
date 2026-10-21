@@ -13,6 +13,10 @@ metrics covers hard and soft labels alike:
 - **log_loss**: cross-entropy of the predictions against the target.
 - **score_error**: for score questions, the absolute gap between predicted and target expected level.
 - **auc**: for noul questions, how well P(true) ranks true above false targets.
+- **brier**: squared distance between predicted and target distributions, summed over a question's
+  options and averaged over questions.
+- **ece**: expected calibration error of the top option (see `sysone.calibration.ece`): how far
+  "says X%" is from "right X% of the time".
 """
 
 from __future__ import annotations
@@ -22,10 +26,11 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from .calibration import ece
 from .data import Example, examples_from
 from .questions import QUESTION_TYPES
 
-METRICS = ("accuracy", "distance", "log_loss", "score_error", "auc")
+METRICS = ("accuracy", "distance", "log_loss", "brier", "ece", "score_error", "auc")
 _TIE = 1e-9
 _LOG_FLOOR = 1e-12
 
@@ -49,6 +54,8 @@ def _summarize(items: list[dict]) -> dict:
     out["accuracy"] = sum(it["hit"] for it in items) / len(items)
     out["distance"] = sum(it["distance"] for it in items) / len(items)
     out["log_loss"] = sum(it["log_loss"] for it in items) / len(items)
+    out["brier"] = sum(it["brier"] for it in items) / len(items)
+    out["ece"] = ece([it["confidence"] for it in items], [it["hit"] for it in items])
     gaps = [it["level_gap"] for it in items if it["level_gap"] is not None]
     if gaps:
         out["score_error"] = sum(gaps) / len(gaps)
@@ -82,6 +89,8 @@ def score(examples: Sequence[Example], probabilities: Sequence[Sequence[float]],
             "hit": sum(t[i] >= best - _TIE for i in picked) / len(picked),
             "distance": 0.5 * sum(abs(a - b) for a, b in zip(p, t)),
             "log_loss": -sum(b * math.log(max(a, _LOG_FLOOR)) for a, b in zip(p, t) if b > 0),
+            "brier": sum((a - b) ** 2 for a, b in zip(p, t)),
+            "confidence": top,
             "level_gap": None,
             "p_true": None,
             "noul_label": None,
@@ -152,16 +161,21 @@ def compare(reports: Mapping[str, dict], by: str = "type", metric: str = "accura
     if by == "overall":
         rows = {name: {m: r["overall"].get(m) for m in METRICS if r["overall"] and m in r["overall"]}
                 for name, r in reports.items()}
-        return pd.DataFrame(rows).T
+        columns = [m for m in METRICS if any(m in row for row in rows.values())]
+        return pd.DataFrame.from_dict(rows, orient="index", columns=columns)
     key = {"type": "by_type", "category": "by_category", "question": "by_question"}.get(by)
     if key is None:
         raise ValueError("by must be 'overall', 'type', 'category' or 'question', got %r" % (by,))
     if metric not in METRICS:
         raise ValueError("metric must be one of %s, got %r" % (", ".join(METRICS), metric))
-    rows = {}
+    rows, columns = {}, []
     for name, r in reports.items():
         row = {group: stats.get(metric) for group, stats in r[key].items()}
+        columns.extend(group for group in row if group not in columns)
         if r["overall"]:
             row["overall"] = r["overall"].get(metric)
         rows[name] = row
-    return pd.DataFrame(rows).T
+    # columns in the order groups first appear, then overall; set explicitly so it doesn't depend
+    # on the pandas version
+    columns.append("overall")
+    return pd.DataFrame.from_dict(rows, orient="index", columns=columns)

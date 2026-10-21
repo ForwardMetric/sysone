@@ -25,6 +25,11 @@ class ModernBertArchitecture(Architecture):
     # moved in 4 epochs, so their default is ten times higher (not yet measured).
     learning_rates = {"full": 5e-5, "adapter": 1e-3}
 
+    def sliding_window(self, model) -> int:
+        # `local_attention` is the whole window; transformers before 5.x's `sliding_window`
+        # property doesn't expose the half-window, so it is worked out here the same way.
+        return int(model.config.local_attention) // 2
+
     def check_tokenizer(self, tokenizer) -> None:
         super().check_tokenizer(tokenizer)
         missing = [name for name in ("cls_token_id", "sep_token_id", "mask_token_id")

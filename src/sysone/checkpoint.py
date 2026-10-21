@@ -80,7 +80,7 @@ def save_training_state(state: TrainState, path: Path) -> None:
     with open(path / _STATE_META, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
     torch.save({"epoch_generator": state.epoch_generator, "rng": state.rng, "optimizer": state.optimizer,
-                "current": state.current}, path / _STATE_TENSORS)
+                "current": state.current, "scaler": state.scaler}, path / _STATE_TENSORS)
 
 
 def load_training_state(path: Path) -> TrainState | None:

@@ -6,10 +6,13 @@ import hashlib
 import inspect
 import json
 import math
+import os
 import random
 import shutil
+import time
 import warnings
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from numbers import Real
 from pathlib import Path
 from typing import Any
@@ -21,6 +24,7 @@ from .answers import answer
 from .architectures.base import Architecture
 from .architectures.registry import architecture_for, architecture_from_spec, architecture_spec
 from .cache import FeatureCache, question_key
+from .calibration import ece, fit_temperatures, temperature
 from .checkpoint import (
     ADAPTER_DIR,
     BACKBONE_FILE,
@@ -49,6 +53,7 @@ from .training import (
     TrainItem,
     TrainSettings,
     TrainState,
+    collect_logits,
     evaluate_items,
     sample_weights,
     split_validation,
@@ -73,6 +78,8 @@ HEADS = ("compact", "full")
 LORA_TARGET_GROUPS = ("attention", "mlp", "all")
 CONFIG_FILE = "config.json"
 HEAD_FILE = "head.safetensors"
+#: Written next to an autosave: what was saved and how to resume it.
+RUN_FILE = "run.json"
 #: Above this estimated size, cached features are not kept in memory and the backbone runs every epoch.
 CACHE_LIMIT_BYTES = 8 * 1024**3
 #: With save(training_state="auto"), a larger training state is left out.
@@ -91,7 +98,7 @@ _ADAPTER_PARAMS = ("lora_rank", "lora_alpha", "lora_dropout", "lora_targets", "q
 # Settings that shape a training run. A saved run resumes only if these and the data are unchanged.
 _RUN_PARAMS = ("batch_size", "validation_fraction", "validation_interval", "seed", "balance", "optimizer",
                "scheduler", "warmup_ratio", "backbone_lr", "head_lr", "weight_decay", "grad_clip",
-               "shuffle_options", "label_smoothing")
+               "shuffle_options", "label_smoothing", "ordinal_weight")
 
 
 class NotFittedError(RuntimeError):
@@ -153,6 +160,7 @@ class SystemOneModel:
         validation_interval="auto",
         # objective and data
         loss: str = "soft-ce",
+        ordinal_weight: float = 1.0,
         label_smoothing: float = 0.0,
         shuffle_options="auto",
         balance: str | None = None,
@@ -163,6 +171,8 @@ class SystemOneModel:
         cache_max_gb: float = 5,
         precision: str = "auto",
         gradient_checkpointing="auto",
+        checkpoint_dir=None,
+        checkpoint_every: int | None = None,
         device: str = "auto",
         seed: int = 0,
         verbose: int = 1,
@@ -204,6 +214,7 @@ class SystemOneModel:
         self.target_loss = target_loss
         self.validation_interval = validation_interval
         self.loss = loss
+        self.ordinal_weight = ordinal_weight
         self.label_smoothing = label_smoothing
         self.shuffle_options = shuffle_options
         self.balance = balance
@@ -213,6 +224,8 @@ class SystemOneModel:
         self.cache_max_gb = cache_max_gb
         self.precision = precision
         self.gradient_checkpointing = gradient_checkpointing
+        self.checkpoint_dir = checkpoint_dir
+        self.checkpoint_every = checkpoint_every
         self.device = device
         self.seed = seed
         self.verbose = verbose
@@ -293,8 +306,16 @@ class SystemOneModel:
         positive_number("target_loss", optional=True)
         positive_number("lora_alpha", optional=True)
         positive_number("cache_max_gb")
+        if self.checkpoint_every is not None:
+            positive_int("checkpoint_every")
+            if self.checkpoint_dir is None:
+                raise ValueError("checkpoint_every=%r needs checkpoint_dir: there is nowhere to save"
+                                 % (self.checkpoint_every,))
         if self.backbone_lr != "auto":
             positive_number("backbone_lr")
+        if isinstance(self.ordinal_weight, bool) or not isinstance(self.ordinal_weight, Real) \
+                or not math.isfinite(self.ordinal_weight) or self.ordinal_weight < 0:
+            raise ValueError("ordinal_weight must be a number of at least 0, got %r" % (self.ordinal_weight,))
         if self.validation_interval != "auto":
             positive_int("validation_interval")
         if not 0.0 <= self.lora_dropout < 1.0:
@@ -419,6 +440,7 @@ class SystemOneModel:
         self.head_dim_ = max(1, hidden // 2) if self.head_dim == "auto" else self.head_dim
         self.head_ = CompactHead(hidden, self.head_dim_, self.head_layers, self.head_dropout).to(self.device_)
         self.temperatures_ = {t: 1.0 for t in QUESTION_TYPES}
+        self.temperatures_by_options_ = {}
         self.history_ = []
         self.training_state_ = None
         self.structure_ = self._structure()
@@ -524,8 +546,6 @@ class SystemOneModel:
         fresh = not self.is_fitted
         if fresh:
             self._setup(examples)
-        if self.calibrate:
-            self._log("calibration is not implemented yet; temperatures stay at 1.0")
         plan = self.plan_
         backbone_groups = set_trainable(self.architecture_, self.backbone_, plan)
 
@@ -622,28 +642,116 @@ class SystemOneModel:
 
         net = Network(self.head_, self.device_, backbone=self.backbone_ if plan.learns else None,
                       arch=self.architecture_, pad_id=self.tokenizer_.pad_token_id, backbone_groups=backbone_groups,
-                      autocast_dtype=self._autocast_dtype())
+                      autocast_dtype=self._autocast_dtype(), ordinal_weight=float(self.ordinal_weight))
         settings = TrainSettings(
             epochs=self.epochs, batch_size=self.batch_size,
             lrs=self._learning_rates(),
             weight_decay=self.weight_decay, optimizer=self.optimizer, scheduler=self.scheduler,
             warmup_ratio=self.warmup_ratio, grad_clip=self.grad_clip, early_stopping=self.early_stopping,
             n_iter_no_change=self.n_iter_no_change, target_loss=self.target_loss, validation_interval=interval,
-            micro_batch=micro)
+            micro_batch=micro, checkpoint_every=self.checkpoint_every)
         self.training_state_ = state
+        run = {"steps_per_epoch": steps_per_epoch,
+               "data_path": str(Path(data).resolve()) if isinstance(data, (str, os.PathLike)) else None,
+               "questions_given": questions is not None}
+        if self.checkpoint_dir is not None:
+            self._log("autosaving to %s when training ends or is interrupted%s"
+                      % (self.checkpoint_dir, "" if self.checkpoint_every is None
+                         else ", and every %d steps" % self.checkpoint_every))
+        finished = False
         try:
             train(net, train_items, len(train_ex), val_items, sample_weights(train_ex, self.balance), settings,
-                  state, self.history_, self._log, resume=resume)
+                  state, self.history_, self._log, resume=resume,
+                  checkpoint=lambda: self._autosave(run, "periodic"))
+            finished = True
         finally:
             round_trained(backbone_groups, self.dtype_)
             self.backbone_.eval()
+            if not finished and self.checkpoint_dir is not None:
+                try:
+                    self._autosave(run, "interrupted")
+                except Exception as exc:  # never hide the error that stopped training
+                    self._log("autosave after the interruption failed: %s" % exc)
         self.report_ = {
             "n_train": len(train_ex),
             "n_validation": len(val_ex),
             "skipped": dict(skipped),
             "validation": evaluate_items(net, val_items) if val_items else None,
+            "calibration": self._calibrate(net, val_items),
         }
+        if self.checkpoint_dir is not None:
+            self._autosave(run, "finished")
         return self
+
+    def _autosave(self, run: dict, reason: str) -> None:
+        """Save to `checkpoint_dir` with the training state, through a temporary folder so a failure
+        mid-save leaves the previous checkpoint intact, and write `run.json`."""
+        path = Path(self.checkpoint_dir).expanduser()
+        tmp, old = path.with_name(path.name + ".saving"), path.with_name(path.name + ".old")
+        started = time.time()
+        for leftover in (tmp, old):
+            if leftover.exists():
+                shutil.rmtree(leftover)
+        self.save(tmp, training_state=True)
+        state = self.training_state_
+        name = type(self).__name__
+        data = repr(run["data_path"]) if run["data_path"] else "<the same training data>"
+        if run["questions_given"]:
+            data += ", questions=<the same question catalog>"
+        info = {
+            "reason": reason,
+            "model_class": name,
+            "sysone_version": __version__,
+            "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "step": state.step,
+            "epoch": round(state.step / run["steps_per_epoch"], 3),
+            "epochs": self.epochs,
+            "best_val_loss": state.best_loss if math.isfinite(state.best_loss) else None,
+            "best_step": state.best_step if math.isfinite(state.best_loss) else None,
+            "data_fingerprint": state.fingerprint,
+            "data_path": run["data_path"],
+            "resume": "from sysone import %s; %s.load(%r).fit(%s)" % (name, name, str(path), data),
+        }
+        with open(tmp / RUN_FILE, "w", encoding="utf-8") as f:
+            json.dump(info, f, indent=2)
+        if path.exists():
+            path.rename(old)
+        tmp.rename(path)
+        if old.exists():
+            shutil.rmtree(old)
+        size = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+        self._log("autosaved (%s) at step %d to %s: %s in %.1fs"
+                  % (reason, state.step, path, format_bytes(size), time.time() - started))
+
+    def _calibrate(self, net: Network, val_items: list[TrainItem]) -> dict | None:
+        """Fit temperatures on the validation slice; returns the calibration summary for `report_`."""
+        if not self.calibrate:
+            self.temperatures_, self.temperatures_by_options_ = {t: 1.0 for t in QUESTION_TYPES}, {}
+            return None
+        if not val_items:
+            self._log("no validation slice: temperatures stay at 1.0")
+            return None
+        logits = collect_logits(net, val_items)
+        targets = [it.target for it in val_items]
+        qtypes = [it.qtype for it in val_items]
+        self.temperatures_, self.temperatures_by_options_ = fit_temperatures(logits, targets, qtypes, self._log)
+
+        def calibration_error(calibrated: bool) -> float:
+            confidences, hits = [], []
+            for x, t, q in zip(logits, targets, qtypes):
+                temp = temperature(self.temperatures_, self.temperatures_by_options_, QUESTION_TYPES[q], len(x)) \
+                    if calibrated else 1.0
+                p = torch.softmax(x / temp, dim=-1)
+                confidences.append(float(p.max()))
+                hits.append(float(t[int(p.argmax())] >= t.max() - 1e-9))
+            return ece(confidences, hits)
+
+        summary = {"temperatures": dict(self.temperatures_), "by_options": self.temperatures_by_options_,
+                   "ece_before": calibration_error(False), "ece_after": calibration_error(True)}
+        self._log("calibration: temperatures %s; validation ECE %.4f -> %.4f"
+                  % (", ".join("%s %.3g" % kv for kv in self.temperatures_.items()), summary["ece_before"],
+                     summary["ece_after"]))
+        return summary
 
     # -- predict -------------------------------------------------------------------------------
 
@@ -681,38 +789,43 @@ class SystemOneModel:
             result["usage"]["input_tokens"] += n_tokens
         return results[0] if single else results
 
-    def evaluate(self, data, questions: Mapping | None = None) -> dict:
+    def evaluate(self, data, questions: Mapping | None = None, calibrated: bool = True) -> dict:
         """Score the model on labelled data, in any form `fit` accepts.
 
         Returns a plain dict with `overall`, `by_type`, `by_category` and `by_question` metrics
-        (accuracy, distance, log_loss, and score_error / auc where they apply). Hard and soft
-        labels are scored the same way; see `sysone.evaluation` for the definitions.
+        (accuracy, distance, log_loss, brier, ece, and score_error / auc where they apply). Hard
+        and soft labels are scored the same way; see `sysone.evaluation` for the definitions.
+        `calibrated=False` scores the probabilities before temperature scaling.
         """
         self._check_fitted()
         examples, skipped = examples_from(data, questions, labeled=True)
-        probs, _ = self._predict_examples(examples)
+        probs, _ = self._predict_examples(examples, calibrated=calibrated)
         return score(examples, probs, skipped)
 
-    def _predict_examples(self, examples: list[Example]) -> tuple[list[list[float]], list[int]]:
-        """Option probabilities (temperature-scaled) and sequence lengths for each example."""
+    def _predict_examples(self, examples: list[Example],
+                          calibrated: bool = True) -> tuple[list[list[float]], list[int]]:
+        """Option probabilities (temperature-scaled unless `calibrated=False`) and sequence lengths."""
         if not examples:
             return [], []
         encoder = self._encoder()
         encoded = [encoder.encode(ex.state, ex.question) for ex in examples]
         feats = extract(self.architecture_, self.backbone_, encoded, self.tokenizer_.pad_token_id, self.device_,
                         self._autocast_dtype())
-        probs = self._probabilities(feats, [ex.question.type_index for ex in examples])
+        probs = self._probabilities(feats, [ex.question.type_index for ex in examples], calibrated)
         return probs, [len(e.input_ids) for e in encoded]
 
     @torch.no_grad()
-    def _probabilities(self, feats, qtypes, batch_size: int = 256) -> list[list[float]]:
+    def _probabilities(self, feats, qtypes, calibrated: bool = True, batch_size: int = 256) -> list[list[float]]:
         self.head_.eval()
-        temps = torch.tensor([self.temperatures_[t] for t in QUESTION_TYPES], device=self.device_)
+        by_options = getattr(self, "temperatures_by_options_", {})
+        temps = [temperature(self.temperatures_, by_options, QUESTION_TYPES[q], f.options.shape[0])
+                 if calibrated else 1.0 for f, q in zip(feats, qtypes)]
         out = []
         for start in range(0, len(feats), batch_size):
             options, mask, summary = collate_features(feats[start: start + batch_size], self.device_)
             qtype = torch.tensor(qtypes[start: start + batch_size], dtype=torch.long, device=self.device_)
-            logits = self.head_(options, mask, summary, qtype) / temps[qtype][:, None]
+            temp = torch.tensor(temps[start: start + batch_size], device=self.device_)
+            logits = self.head_(options, mask, summary, qtype) / temp[:, None]
             out.extend(torch.softmax(logits, dim=-1).cpu().tolist())
         return out
 
@@ -745,6 +858,7 @@ class SystemOneModel:
             "prompt_format": self.prompt_format_.to_dict(),
             "type_names": list(QUESTION_TYPES),
             "temperatures": self.temperatures_,
+            "temperatures_by_options": getattr(self, "temperatures_by_options_", {}),
             "fitted": {
                 "max_state_tokens": self.max_state_tokens_,
                 "max_option_tokens": self.max_option_tokens_,
@@ -834,6 +948,8 @@ class SystemOneModel:
         head.load_state_dict(state)
         model.head_ = head.to(model.device_).eval()
         model.temperatures_ = {t: float(config["temperatures"].get(t, 1.0)) for t in QUESTION_TYPES}
+        model.temperatures_by_options_ = {t: {b: float(v) for b, v in buckets.items()}
+                                          for t, buckets in (config.get("temperatures_by_options") or {}).items()}
         model.history_ = config.get("history") or []
         model.report_ = config.get("report")
         model.training_state_ = load_training_state(path / STATE_DIR) if (path / STATE_DIR).is_dir() else None

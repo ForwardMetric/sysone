@@ -179,6 +179,9 @@ def test_an_old_torchao_is_ignored(tiny_models, monkeypatch, tmp_path):
 
     from peft import import_utils
 
+    if not hasattr(import_utils, "is_torchao_available"):
+        pytest.skip("this peft version has no torchao check to work around")
+
     def old_torchao():
         raise ImportError("Found an incompatible version of torchao. Found version 0.10.0, but only versions "
                           "above 0.16.0 are supported")
@@ -242,3 +245,16 @@ def test_models_saved_with_the_old_learning_rate_settings_load(tiny_models, tmp_
     loaded = DecoderModel.load(saved, verbose=0)
     assert loaded.backbone_lr == expected and "adapter_lr" not in loaded.get_params()
     assert loaded.predict(STATE, QUESTIONS) == model.predict(STATE, QUESTIONS)
+
+
+def test_quantization_needs_a_cuda_gpu_not_just_bitsandbytes(monkeypatch):
+    # on Linux bitsandbytes installs even without a GPU; 4-bit loading must still be refused
+    import sys
+    import types
+
+    monkeypatch.setitem(sys.modules, "bitsandbytes", types.ModuleType("bitsandbytes"))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    assert not quantization_available(torch.device("cuda"))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    assert quantization_available(torch.device("cuda"))
+    assert not quantization_available(torch.device("cpu"))

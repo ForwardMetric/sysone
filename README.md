@@ -92,8 +92,15 @@ This is an early version (0.2). Training covers every `tuning` mode:
 adapters barely moved ModernBERT, while full tuning reached 0.79 test accuracy on typed-decisions.
 
 Training stops at `epochs`, by early stopping, or at `target_loss`. A run that is interrupted
-(Ctrl-C), or saved and loaded, resumes exactly where it stopped. Calibration and `head="full"` are
-designed but not yet implemented.
+(Ctrl-C), or saved and loaded, resumes exactly where it stopped. With `checkpoint_dir`, `fit` also
+saves the model when it ends or is interrupted, and every `checkpoint_every` steps if set, so a
+disconnected notebook can pick the run up again; nothing is written to disk by default.
+
+Score questions add an ordinal term to the loss (`ordinal_weight`), so a near miss costs less than
+a far one. After training, probabilities are calibrated with temperatures fitted on the validation
+slice, so `answer_confidence` matches how often answers are right; reports include Brier score and
+expected calibration error, before and after calibration. `head="full"` is designed but not yet
+implemented.
 
 See [docs/DESIGN.md](https://github.com/ForwardMetric/sysone/blob/main/docs/DESIGN.md) for the full design: every parameter, the layouts,
 architectures, heads, training and checkpoint format.

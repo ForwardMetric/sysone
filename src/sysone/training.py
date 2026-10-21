@@ -13,6 +13,7 @@ from __future__ import annotations
 import copy
 import math
 import random
+import warnings
 from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -24,7 +25,8 @@ from ._util import autocast, empty_device_cache, is_out_of_memory
 from .data import Example
 from .features import Features, collate_features, read_vectors, run_in_batches
 from .layout import Encoded, collate
-from .losses import soft_ce
+from .losses import decision_loss
+from .questions import TYPE_INDEX
 
 OPTIMIZERS = ("adamw", "adamw_8bit", "sgd")
 SCHEDULERS = ("cosine", "linear", "constant")
@@ -54,6 +56,7 @@ class TrainSettings:
     target_loss: float | None
     validation_interval: int  # optimizer steps between validation checks
     micro_batch: int  # examples per forward pass to start with; halved when memory runs out
+    checkpoint_every: int | None = None  # optimizer steps between calls to `checkpoint`
 
 
 @dataclass
@@ -71,6 +74,7 @@ class TrainState:
     rng: dict = field(default_factory=dict)  # torch generator states after the last step
     optimizer: dict | None = None  # optimizer state after the last step, on the CPU
     current: dict | None = None  # trained weights after the last step, fp32 on the CPU
+    scaler: dict | None = None  # fp16 loss-scaler state after the last step
 
     @classmethod
     def fresh(cls, fingerprint: str, seed: int) -> TrainState:
@@ -91,8 +95,10 @@ class Network:
     """
 
     def __init__(self, head: nn.Module, device: torch.device, backbone: nn.Module | None = None, arch=None,
-                 pad_id: int = 0, backbone_groups: dict | None = None, autocast_dtype: torch.dtype | None = None):
+                 pad_id: int = 0, backbone_groups: dict | None = None, autocast_dtype: torch.dtype | None = None,
+                 ordinal_weight: float = 0.0):
         self.head = head
+        self.ordinal_weight = ordinal_weight
         self.device = device
         self.backbone = backbone
         self.arch = arch
@@ -126,6 +132,13 @@ class Network:
         for i, it in enumerate(items):
             target[i, : it.target.shape[0]] = it.target
         return self.head(options, mask, summary, qtype), mask, target.to(self.device)
+
+    def objective(self, items: Sequence[TrainItem]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """`(loss per row, logits, target)`: soft cross-entropy, plus the ranked-probability term on
+        score questions."""
+        logits, mask, target = self.forward(items)
+        ordinal = torch.tensor([it.qtype == TYPE_INDEX["score"] for it in items], device=logits.device)
+        return decision_loss(logits, target, mask, ordinal, self.ordinal_weight), logits, target
 
     def snapshot(self) -> dict[str, torch.Tensor]:
         return {n: p.detach().to("cpu", torch.float32, copy=True) for n, p in self.named_trainable()}
@@ -225,14 +238,26 @@ def evaluate_items(net: Network, items: Sequence[TrainItem], batch_size: int = 6
     net.train(False)
 
     def batch_fn(chunk: list[TrainItem]) -> list[tuple[float, bool]]:
-        logits, mask, target = net.forward(chunk)
-        losses = soft_ce(logits, target, mask, reduction="none")
+        losses, logits, target = net.objective(chunk)
         hits = logits.argmax(-1) == target.argmax(-1)
         return list(zip(losses.tolist(), hits.tolist()))
 
     results = run_in_batches(items, batch_fn, start=batch_size, length=_length)
     n = max(1, len(items))
     return {"loss": sum(r[0] for r in results) / n, "accuracy": sum(r[1] for r in results) / n, "n": len(items)}
+
+
+@torch.no_grad()
+def collect_logits(net: Network, items: Sequence[TrainItem], batch_size: int = 64) -> list[torch.Tensor]:
+    """Each item's logits over its own options, on the CPU in fp32, in input order."""
+    net.train(False)
+
+    def batch_fn(chunk: list[TrainItem]) -> list[torch.Tensor]:
+        logits, mask, _ = net.forward(chunk)
+        logits = logits.float().cpu()
+        return [logits[i, : int(m.sum())].clone() for i, m in enumerate(mask.cpu())]
+
+    return run_in_batches(items, batch_fn, start=batch_size, length=_length)
 
 
 def _rng_states() -> dict:
@@ -265,7 +290,8 @@ def _to_cpu(value):
 
 def train(net: Network, train_items: Callable[[int], Sequence[TrainItem]], n_train: int,
           val_items: Sequence[TrainItem], weights: torch.Tensor | None, settings: TrainSettings,
-          state: TrainState, history: list, log: Callable[[str], None], resume: bool = False) -> TrainState:
+          state: TrainState, history: list, log: Callable[[str], None], resume: bool = False,
+          checkpoint: Callable[[], None] | None = None) -> TrainState:
     """Train `net` in place, continuing from `state`; returns the updated state.
 
     `train_items(epoch)` returns that epoch's training items: the same cached list every epoch, or
@@ -277,6 +303,10 @@ def train(net: Network, train_items: Callable[[int], Sequence[TrainItem]], n_tra
     are then restored, and `state` keeps the last weights so a later call can resume.
 
     A `KeyboardInterrupt` stops training the same way and is then raised again.
+
+    With `checkpoint_every`, `checkpoint()` is called every that many steps, while the network
+    temporarily holds the best weights so far and `state` holds the last step's, so what it saves
+    is a usable model that can also resume the run.
     """
     steps_per_epoch = math.ceil(n_train / settings.batch_size)
     total_steps = steps_per_epoch * settings.epochs
@@ -297,6 +327,10 @@ def train(net: Network, train_items: Callable[[int], Sequence[TrainItem]], n_tra
         _set_rng_states(state.rng)
     scheduler = make_scheduler(optimizer, settings.scheduler, settings.warmup_ratio, total_steps, state.step)
     params = [p for _, p in net.named_trainable()]
+    # fp16 has a narrow range: scale the loss so small gradients don't round to zero
+    scaler = torch.amp.GradScaler(net.device.type) if net.autocast_dtype == torch.float16 else None
+    if scaler is not None and resume and state.scaler:
+        scaler.load_state_dict(state.scaler)
     generator = torch.Generator()
     micro = max(1, min(settings.micro_batch, settings.batch_size))
 
@@ -309,9 +343,9 @@ def train(net: Network, train_items: Callable[[int], Sequence[TrainItem]], n_tra
                 total = 0.0
                 for start in range(0, len(chunk), micro):
                     part = chunk[start: start + micro]
-                    logits, mask, target = net.forward(part)
-                    loss = soft_ce(logits, target, mask)
-                    (loss * (len(part) / len(chunk))).backward()
+                    loss = net.objective(part)[0].mean()
+                    part_loss = loss * (len(part) / len(chunk))
+                    (scaler.scale(part_loss) if scaler is not None else part_loss).backward()
                     total += loss.item() * len(part)
                 break
             except (RuntimeError, torch.OutOfMemoryError) as exc:
@@ -321,10 +355,21 @@ def train(net: Network, train_items: Callable[[int], Sequence[TrainItem]], n_tra
                 empty_device_cache()
                 micro = max(1, micro // 2)
                 log("out of memory: running %d examples per forward pass" % micro)
+        if scaler is not None:
+            scaler.unscale_(optimizer)
         if settings.grad_clip:
             nn.utils.clip_grad_norm_(params, settings.grad_clip)
-        optimizer.step()
-        scheduler.step()
+        if scaler is not None:
+            scaler.step(optimizer)  # skipped when the scaled gradients overflowed
+            scaler.update()
+            # The schedule still advances on a skipped step, so its position always equals
+            # `state.step` (which resuming relies on); torch warns about that, harmlessly.
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="Detected call of `lr_scheduler.step\\(\\)`")
+                scheduler.step()
+        else:
+            optimizer.step()
+            scheduler.step()
         return total
 
     def check() -> bool:
@@ -351,6 +396,18 @@ def train(net: Network, train_items: Callable[[int], Sequence[TrainItem]], n_tra
                 % round((state.step - state.best_step) / steps_per_epoch, 3))
             return True
         return False
+
+    def save_checkpoint() -> None:
+        state.current = net.snapshot()
+        state.optimizer = _to_cpu(optimizer.state_dict())
+        state.scaler = scaler.state_dict() if scaler is not None else None
+        if best is not None:
+            net.restore(best)
+        try:
+            checkpoint()
+        finally:
+            if best is not None:
+                net.restore(state.current)
 
     def check_due() -> bool:
         return state.step > state.last_check and (state.step % settings.validation_interval == 0
@@ -384,6 +441,9 @@ def train(net: Network, train_items: Callable[[int], Sequence[TrainItem]], n_tra
                     if stop:
                         break
                     net.train(True)
+                if checkpoint is not None and settings.checkpoint_every and \
+                        state.step % settings.checkpoint_every == 0:
+                    save_checkpoint()
     except KeyboardInterrupt:
         interrupted = True
         log("interrupted at step %d (epoch %g); fit() again to resume" % (state.step, state.step / steps_per_epoch))
@@ -391,6 +451,7 @@ def train(net: Network, train_items: Callable[[int], Sequence[TrainItem]], n_tra
         optimizer.zero_grad(set_to_none=True)
         state.current = net.snapshot()
         state.optimizer = _to_cpu(optimizer.state_dict())
+        state.scaler = scaler.state_dict() if scaler is not None else None
         if best is not None:
             net.restore(best)
         net.train(False)
