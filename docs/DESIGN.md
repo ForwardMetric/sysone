@@ -182,6 +182,7 @@ DecoderModel(
     early_stopping=True,
     validation_fraction=0.1,    # held out for early stopping, calibration and the report
     n_iter_no_change=3,         # epochs without improvement before stopping
+    target_loss=None,           # stop once validation loss reaches this value (milestone 2)
 
     # objective and data
     loss="soft-ce",             # "soft-ce" | "rlcd"
@@ -382,8 +383,8 @@ Each option is truncated to `max_option_tokens` and the state to `max_state_toke
   shuffling during training.
 
 Mask details:
-- Masks are built in the model's dtype with `torch.finfo(dtype).min` for blocked positions, not
-  `-inf`, to avoid NaNs in half precision.
+- Masks are boolean (True where attention is allowed), which `sdpa` accepts directly. No `-inf`
+  is ever added to scores, so half precision can't produce NaNs from the mask.
 - Padded rows attend only to themselves, so no row is fully masked.
 - Sliding-window layers measure their window in position ids, not sequence index. Options share
   positions, so a sequence-index window would let one option see more context than another.
@@ -526,10 +527,39 @@ reusing the slice biases it very little, and it avoids holding back a second sli
 
 ### Evaluation
 
-`model.evaluate(rows)` returns, and `fit` stores in `report_`:
-- loss and accuracy overall, per question type, per category and per question;
-- AUC for noul questions, when both labels occur;
-- expected calibration error before and after temperature scaling.
+Evaluation reads labels exactly as `fit` does (`expected`, a `label` inside a question, or soft
+`gold`), so any data `fit` accepts can be evaluated with no scoring code, and hard and soft labels
+are scored the same way. Each label becomes a target distribution over the question's options.
+
+```python
+from sysone import baselines, compare
+
+results = baselines(test, train=train)      # {"random guess": report, "average answer": report}
+results["trained"] = model.evaluate(test)   # a report
+compare(results)                            # pandas table: accuracy per question type
+compare(results, by="overall")              # every metric
+compare(results, by="category")             # accuracy per category
+```
+
+A report is a plain dict: `n_questions`, `skipped`, and the metrics `overall`, `by_type`,
+`by_category` and `by_question` (keyed `category/qid`). Metrics:
+- **accuracy**: the predicted top option is a top option of the target. For a hard label this is
+  ordinary accuracy; for soft labels it is agreement with the raters' majority. For a score
+  question it means the exact level.
+- **distance**: total variation distance between predicted and target distributions.
+- **log_loss**: cross-entropy against the target.
+- **score_error**: for score questions, the absolute gap between predicted and target expected
+  level.
+- **auc**: for noul questions, when both labels occur.
+- **expected calibration error** before and after temperature scaling, once calibration exists.
+
+Baselines:
+- **random guess**: every option equally likely.
+- **average answer**: for each question (`category/qid` with the same number of options), the
+  average target in the training data; questions never seen in training fall back to the random
+  guess.
+
+`compare` is the only part that needs pandas. `fit` stores a validation report in `report_`.
 
 ### Checkpoints
 
@@ -565,11 +595,11 @@ src/sysone/
   calibration.py       # temperature fitting
   training.py          # training loop, validation split, balancing, early stopping
   features.py          # cached option and summary vectors for a frozen backbone
-  metrics.py           # accuracy, AUC, ECE
+  evaluation.py        # evaluate reports, baselines, compare
   checkpoint.py        # save / load
 tests/                 # combination matrix per architecture (tiny random configs),
                        # option-order invariance, layout goldens, data input forms, answer schema
-examples/              # modernbert_mixed.py, qwen_mixed.py
+examples/              # notebooks: quickstart, public datasets with hard and soft labels
 docs/
 ```
 
@@ -583,6 +613,19 @@ applies.
 - HTTP serving, framework integrations and ONNX export.
 - Long-document windowing: scanning a state longer than `max_state_tokens` in overlapping windows.
 - Abstention thresholds and confidence binning on top of temperatures.
+
+## Planned for milestone 2
+
+Alongside `tuning="lora"`, `"qlora"` and `"full"`:
+- **Stopping at a target loss.** `target_loss` ends training as soon as validation loss reaches
+  that value, in addition to `epochs` (the upper bound) and early stopping. Without a validation
+  slice it applies to the training loss and says so in the log.
+- **Feature cache on disk.** A `cache_dir` setting keeps the frozen backbone's option and summary
+  vectors between runs, keyed by the base model and revision, `num_layers`, layout, prompt format,
+  token limits and the encoded text. A second `fit`, or `fit` on a reloaded model, then skips the
+  backbone pass, which is most of the cost of head-only training.
+- **Resuming exactly.** Saving the optimizer and schedule state with the model, so a later `fit`
+  continues the same run instead of warm-starting from the trained weights with a fresh optimizer.
 
 ## Open items
 
