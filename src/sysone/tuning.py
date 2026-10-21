@@ -154,25 +154,25 @@ def is_adapter(name: str) -> bool:
 
 
 def trained_parameters(arch: Architecture, backbone: nn.Module, plan: LayerPlan) -> dict[str, list]:
-    """`{"adapter": [(name, param)], "encoder": [(name, param)]}`: the backbone weights that train,
-    in a fixed order. "encoder" holds fully trained layers and embeddings."""
+    """`{"adapter": [(name, param)], "full": [(name, param)]}`: the backbone weights that train,
+    in a fixed order. "full" holds fully trained layers and embeddings."""
     layers = arch.layers(backbone)
     full = {id(p) for i in plan.full_range for p in layers[i].parameters()}
     if plan.train_embeddings:
         full |= {id(p) for p in arch.embeddings(backbone).parameters()}
-    groups: dict[str, list] = {"adapter": [], "encoder": []}
+    groups: dict[str, list] = {"adapter": [], "full": []}
     for name, p in backbone.named_parameters():
         if is_adapter(name):
             groups["adapter"].append((name, p))
         elif id(p) in full:
-            groups["encoder"].append((name, p))
+            groups["full"].append((name, p))
     return groups
 
 
 def round_trained(groups: dict[str, list], dtype: torch.dtype) -> None:
     """Store fully trained layers in the backbone's precision once training ends, as they are saved,
     so a model predicts the same before and after `save` / `load`. Adapters stay in fp32."""
-    for _, p in groups.get("encoder", []):
+    for _, p in groups.get("full", []):
         p.requires_grad_(False)
         p.data = p.data.to(dtype)
 
@@ -181,7 +181,7 @@ def set_trainable(arch: Architecture, backbone: nn.Module, plan: LayerPlan) -> d
     """Freeze everything except the planned weights, which are kept in fp32 for the optimizer."""
     backbone.requires_grad_(False)
     groups = trained_parameters(arch, backbone, plan)
-    for _, p in groups["adapter"] + groups["encoder"]:
+    for _, p in groups["adapter"] + groups["full"]:
         if p.dtype != torch.float32:
             p.data = p.data.float()
         p.requires_grad_(True)

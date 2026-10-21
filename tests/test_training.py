@@ -11,7 +11,7 @@ from sysone.training import Network
 from .conftest import make_rows
 
 FAST = dict(epochs=4, batch_size=8, precision="fp32", device="cpu", verbose=0, num_layers="all",
-            adapter_lr=1e-2, early_stopping=False)
+            backbone_lr=1e-2, early_stopping=False)
 
 
 def _model(kind, path, **params):

@@ -90,7 +90,7 @@ _STRUCTURAL = ("model_name", "revision", "architecture", "num_layers", "layout",
 _ADAPTER_PARAMS = ("lora_rank", "lora_alpha", "lora_dropout", "lora_targets", "quant_bits", "quant_type")
 # Settings that shape a training run. A saved run resumes only if these and the data are unchanged.
 _RUN_PARAMS = ("batch_size", "validation_fraction", "validation_interval", "seed", "balance", "optimizer",
-               "scheduler", "warmup_ratio", "encoder_lr", "adapter_lr", "head_lr", "weight_decay", "grad_clip",
+               "scheduler", "warmup_ratio", "backbone_lr", "head_lr", "weight_decay", "grad_clip",
                "shuffle_options", "label_smoothing")
 
 
@@ -137,8 +137,7 @@ class SystemOneModel:
         head_dropout: float = 0.0,
         # optimization
         optimizer: str = "adamw",
-        encoder_lr: float = 2.5e-5,
-        adapter_lr: float = 1e-4,
+        backbone_lr="auto",
         head_lr: float = 1e-3,
         weight_decay: float = 0.01,
         scheduler: str = "cosine",
@@ -191,8 +190,7 @@ class SystemOneModel:
         self.head_dim = head_dim
         self.head_dropout = head_dropout
         self.optimizer = optimizer
-        self.encoder_lr = encoder_lr
-        self.adapter_lr = adapter_lr
+        self.backbone_lr = backbone_lr
         self.head_lr = head_lr
         self.weight_decay = weight_decay
         self.scheduler = scheduler
@@ -295,6 +293,8 @@ class SystemOneModel:
         positive_number("target_loss", optional=True)
         positive_number("lora_alpha", optional=True)
         positive_number("cache_max_gb")
+        if self.backbone_lr != "auto":
+            positive_number("backbone_lr")
         if self.validation_interval != "auto":
             positive_int("validation_interval")
         if not 0.0 <= self.lora_dropout < 1.0:
@@ -432,6 +432,14 @@ class SystemOneModel:
                   % (self.model_name, self.architecture_.name(), self.backbone_.config.num_hidden_layers,
                      self.backbone_.sysone_total_layers, str(self.dtype_).replace("torch.", ""),
                      self.device_, self.tuning_, trains, self.max_state_tokens_, self.max_option_tokens_))
+
+    def _learning_rates(self) -> dict[str, float]:
+        """Learning rate per parameter group. `backbone_lr="auto"` takes the architecture's defaults
+        for fully trained layers and for adapters; a number sets both."""
+        rates = dict(self.architecture_.learning_rates)
+        if self.backbone_lr != "auto":
+            rates = {group: float(self.backbone_lr) for group in rates}
+        return {"head": self.head_lr, **rates}
 
     def _autocast_dtype(self) -> torch.dtype | None:
         """Trained weights are fp32 next to half-precision frozen ones, so the backbone runs under
@@ -577,6 +585,10 @@ class SystemOneModel:
 
         micro = START_MICRO_BATCH if plan.learns else self.batch_size
         if plan.learns:
+            rates = self._learning_rates()
+            self._log("learning rates: head %g, %s" % (rates["head"], ", ".join(
+                "%s %g" % ("adapters" if group == "adapter" else "fully trained layers", rates[group])
+                for group, named in backbone_groups.items() if named)))
             lengths = sorted(len(encoder.encode(ex.state, ex.question).input_ids) for ex in train_ex)
             seq_len = lengths[min(len(lengths) - 1, int(0.95 * len(lengths)))]
             checkpointing = wants_checkpointing(self.gradient_checkpointing, plan, self.backbone_, seq_len,
@@ -613,7 +625,7 @@ class SystemOneModel:
                       autocast_dtype=self._autocast_dtype())
         settings = TrainSettings(
             epochs=self.epochs, batch_size=self.batch_size,
-            lrs={"head": self.head_lr, "adapter": self.adapter_lr, "encoder": self.encoder_lr},
+            lrs=self._learning_rates(),
             weight_decay=self.weight_decay, optimizer=self.optimizer, scheduler=self.scheduler,
             warmup_ratio=self.warmup_ratio, grad_clip=self.grad_clip, early_stopping=self.early_stopping,
             n_iter_no_change=self.n_iter_no_change, target_loss=self.target_loss, validation_interval=interval,
@@ -760,9 +772,9 @@ class SystemOneModel:
                 target.unlink()
         if self.plan_.n_lora:
             save_adapter(self.backbone_, path / ADAPTER_DIR)
-        encoder_weights = trained_parameters(self.architecture_, self.backbone_, self.plan_)["encoder"]
-        if encoder_weights:
-            save_backbone_weights(encoder_weights, self.dtype_, path / BACKBONE_FILE)
+        full_weights = trained_parameters(self.architecture_, self.backbone_, self.plan_)["full"]
+        if full_weights:
+            save_backbone_weights(full_weights, self.dtype_, path / BACKBONE_FILE)
         state = getattr(self, "training_state_", None)
         if state is not None and training_state is not False:
             size = state.nbytes()
@@ -791,7 +803,7 @@ class SystemOneModel:
         klass = _model_class(config["class"])
         if not issubclass(klass, cls):
             raise TypeError("%s holds a %s, not a %s" % (path, klass.__name__, cls.__name__))
-        params = dict(config["params"])
+        params = _upgrade_params(dict(config["params"]))
         spec = config["architecture"]
         params["architecture"] = None if spec in _registered_specs() else architecture_from_spec(spec)
         params.update(overrides)
@@ -827,6 +839,18 @@ class SystemOneModel:
         model.training_state_ = load_training_state(path / STATE_DIR) if (path / STATE_DIR).is_dir() else None
         model.structure_ = model._structure()
         return model
+
+
+def _upgrade_params(params: dict) -> dict:
+    """Saved parameters from earlier versions, in this version's terms: `encoder_lr` and
+    `adapter_lr` became `backbone_lr`. A value changed from its old default is kept."""
+    encoder_lr, adapter_lr = params.pop("encoder_lr", 2.5e-5), params.pop("adapter_lr", 1e-4)
+    if "backbone_lr" not in params:
+        if params.get("tuning") in ("lora", "qlora") and adapter_lr != 1e-4:
+            params["backbone_lr"] = adapter_lr
+        elif params.get("tuning") == "full" and encoder_lr != 2.5e-5:
+            params["backbone_lr"] = encoder_lr
+    return params
 
 
 def _json_default(value):

@@ -12,7 +12,7 @@ from sysone.tuning import layer_plan, quantization_available
 from .conftest import QUESTIONS, make_rows
 
 FAST = dict(epochs=2, batch_size=8, precision="fp32", device="cpu", verbose=0, num_layers="all",
-            adapter_lr=1e-2, encoder_lr=1e-3)
+            backbone_lr=1e-3)
 STATE = "ticket: red major refund"
 CHOICE = {"c": {"type": "choice", "instructions": "Which color?", "criteria": ["red", "green", "blue"]}}
 REORDERED = {"c": {"type": "choice", "instructions": "Which color?", "criteria": ["blue", "red", "green"]}}
@@ -192,4 +192,53 @@ def test_an_old_torchao_is_ignored(tiny_models, monkeypatch, tmp_path):
     assert import_utils.is_torchao_available is old_torchao  # restored afterwards
     with pytest.warns(UserWarning, match="ignoring the installed torchao"):
         loaded = DecoderModel.load(model.save(tmp_path / "m"), verbose=0)
+    assert loaded.predict(STATE, QUESTIONS) == model.predict(STATE, QUESTIONS)
+
+
+@pytest.mark.parametrize("kind, tuning, backbone_lr, expected", [
+    ("modernbert", "full", "auto", {"full": 5e-5}),
+    ("modernbert", "lora", "auto", {"adapter": 1e-3}),
+    ("qwen3", "lora", "auto", {"adapter": 1e-4}),
+    ("qwen3", "full", "auto", {"full": 2.5e-5}),
+    ("qwen3", "lora", 3e-4, {"adapter": 3e-4}),
+])
+def test_backbone_learning_rate_defaults_come_from_the_architecture(tiny_models, monkeypatch, kind, tuning,
+                                                                    backbone_lr, expected):
+    import sysone.base
+
+    used = {}
+    train = sysone.base.train
+
+    def recording(net, *args, **kwargs):
+        settings = args[4]
+        used.update({group: settings.lrs[group] for group in net.param_groups})
+        return train(net, *args, **kwargs)
+
+    monkeypatch.setattr(sysone.base, "train", recording)
+    _model(kind, tiny_models[kind], tuning=tuning, epochs=1, backbone_lr=backbone_lr).fit(make_rows(10))
+    assert used == {"head": 1e-3, **expected}
+
+
+def test_mixed_setup_uses_each_groups_default(tiny_models):
+    model = _model("qwen3", tiny_models["qwen3"], tuning="lora", trainable_layers=1, lora_layers=1, epochs=1,
+                   backbone_lr="auto")
+    model.fit(make_rows(10))
+    assert model._learning_rates() == {"head": 1e-3, "full": 2.5e-5, "adapter": 1e-4}
+    assert model.set_params(backbone_lr=2e-4)._learning_rates() == {"head": 1e-3, "full": 2e-4, "adapter": 2e-4}
+
+
+@pytest.mark.parametrize("old, expected", [
+    ({"tuning": "lora", "adapter_lr": 1e-4, "encoder_lr": 2.5e-5}, "auto"),
+    ({"tuning": "lora", "adapter_lr": 5e-4, "encoder_lr": 2.5e-5}, 5e-4),
+    ({"tuning": "full", "adapter_lr": 1e-4, "encoder_lr": 5e-5}, 5e-5),
+])
+def test_models_saved_with_the_old_learning_rate_settings_load(tiny_models, tmp_path, old, expected):
+    model = _model("qwen3", tiny_models["qwen3"], tuning=old["tuning"], epochs=1).fit(make_rows(10))
+    saved = model.save(tmp_path / "m")
+    config = json.loads((saved / "config.json").read_text())
+    del config["params"]["backbone_lr"]
+    config["params"].update(old)
+    (saved / "config.json").write_text(json.dumps(config))
+    loaded = DecoderModel.load(saved, verbose=0)
+    assert loaded.backbone_lr == expected and "adapter_lr" not in loaded.get_params()
     assert loaded.predict(STATE, QUESTIONS) == model.predict(STATE, QUESTIONS)

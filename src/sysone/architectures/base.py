@@ -32,6 +32,9 @@ class Architecture(ABC):
     causal: bool = False
     #: Module paths (regex fragments under a layer) for the named adapter target groups.
     lora_targets: dict[str, list[str]] = {}
+    #: `backbone_lr="auto"`: the learning rate for fully trained layers ("full") and for adapters
+    #: ("adapter"). Subclasses set values measured on their model family.
+    learning_rates: dict[str, float] = {"full": 2.5e-5, "adapter": 1e-4}
 
     # -- loading -----------------------------------------------------------------------------
 

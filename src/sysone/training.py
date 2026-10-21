@@ -43,7 +43,7 @@ class TrainItem:
 class TrainSettings:
     epochs: int
     batch_size: int
-    lrs: dict  # learning rate per parameter group: "head", "adapter", "encoder"
+    lrs: dict  # learning rate per parameter group: "head", "adapter", "full"
     weight_decay: float
     optimizer: str
     scheduler: str
