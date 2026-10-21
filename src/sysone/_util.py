@@ -65,12 +65,38 @@ def quiet_transformers():
     from transformers.utils import logging
 
     previous = logging.get_verbosity()
+    bars = logging.is_progress_bar_enabled()
     logging.set_verbosity_error()
+    logging.disable_progress_bar()
     try:
         yield
     finally:
         logging.set_verbosity(previous)
+        if bars:
+            logging.enable_progress_bar()
 
 
 def is_out_of_memory(exc: BaseException) -> bool:
     return isinstance(exc, torch.OutOfMemoryError) or "out of memory" in str(exc).lower()
+
+
+def empty_device_cache() -> None:
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+
+
+def autocast(device: torch.device, dtype: torch.dtype | None):
+    """Autocast to `dtype` on `device`, or nothing when `dtype` is None."""
+    if dtype is None:
+        return contextlib.nullcontext()
+    return torch.autocast(device_type=device.type, dtype=dtype)
+
+
+def format_bytes(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if abs(n) < 1024 or unit == "GB":
+            return ("%d %s" if unit == "B" else "%.1f %s") % (n, unit)
+        n /= 1024
+    return "%.1f GB" % n

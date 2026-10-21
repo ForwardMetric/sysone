@@ -291,6 +291,9 @@ and scaling them automatically would be guesswork that fails silently. A head le
   `"qlora"`.
 - `tuning="qlora"` with `trainable_layers > 0` is rejected, because a quantized layer can't be
   fully fine-tuned.
+- `tuning="head"` with `trainable_layers > 0` or `train_embeddings` is rejected; it trains only the
+  head.
+- `cache_features=True` with a backbone that learns is rejected.
 - `trainable_layers + lora_layers` larger than the kept layers is rejected.
 - Adapter settings (`lora_rank`, `quant_bits`, ...) changed from their defaults outside
   `"lora"` / `"qlora"` give a warning that they are ignored.
@@ -500,7 +503,10 @@ trained on.
 - `balance` resamples examples by category or question.
 - `batch_size` is the number of examples per optimizer update. The library picks how many go
   through the model at once to fit the device's memory, halves that if memory runs out (in the
-  forward or the backward pass), and accumulates gradients up to `batch_size`.
+  forward or the backward pass), and accumulates gradients up to `batch_size`. With a frozen
+  backbone the whole batch goes through the head at once; when the backbone learns, it starts at
+  16 examples per forward pass. Within an update, examples are sorted by length before they are
+  split into forward passes.
 
 **Stopping.** Training ends at whichever comes first:
 - `epochs` have run (the upper bound);
@@ -513,7 +519,16 @@ Validation runs every `validation_interval` optimizer steps. `"auto"` means once
 learns, where one epoch can take many minutes, so stopping isn't delayed by a whole epoch. When
 training stops, the weights from the best validation check are restored. Without a validation
 slice, early stopping is off and `target_loss` applies to the running training loss instead; the
-log says so.
+log says so. A check also runs after the last step.
+
+Each check adds a record to `history_`: the step, the epoch as a fraction (`1.4` is 40% into the
+second epoch), the mean training loss since the previous check, and the validation loss and
+accuracy.
+
+**Interrupting.** Stopping `fit` with Ctrl-C ends training the same way: the best weights so far
+are restored, the training state is kept, and the `KeyboardInterrupt` is raised again. The model
+can then be used or saved, and a later `fit` resumes from the last completed step (see
+[Checkpoints](#checkpoints)).
 
 **Frozen backbone (`tuning="head"`).** Nothing in the backbone learns, so:
 - the backbone runs without gradients and in eval mode (no dropout);
@@ -533,7 +548,12 @@ fit in memory, the backbone is run again each epoch instead.
   weights are stored in 4-bit; with `"lora"` and `"full"` they are loaded in bf16 where supported,
   since they are never updated.
 - Gradient checkpointing (`"auto"`) turns on when sequences are long enough that activations,
-  not weights, dominate memory.
+  not weights, dominate memory: when the estimated activations of one forward pass (about
+  `34·s·h + 5·a·s²` bytes per example and layer, at the 95th-percentile length, for the layers
+  gradients flow through) exceed the backbone's weights.
+- When training ends, fully trained layers and embeddings are rounded to the backbone's precision,
+  the precision they are saved in, so the model predicts the same before and after `save` /
+  `load`. The fp32 values stay in the training state.
 - No feature cache: the backbone's outputs change after every step.
 
 #### Feature cache on disk
@@ -629,17 +649,20 @@ Baselines:
 - `head.safetensors`;
 - `adapter/`, in peft's format, when adapters were trained;
 - `backbone.safetensors` with only the fully trained layers and embeddings, when any were trained,
-  stored in bf16;
-- `training_state/`, when included: the optimizer and schedule state, the step and epoch reached,
-  the best validation loss and the random generator states, plus fp32 copies of fully trained
-  layers.
+  stored in the backbone's precision (bf16 where supported);
+- `training_state/`, when included: the optimizer state, the step reached (which places the
+  schedule and the epoch), the best validation loss and the early-stopping counter, the random
+  generator states, and fp32 copies of every trained weight (head, adapters, fully trained layers)
+  as they were after the last step. The model's own weights are those of the best check, so both
+  are needed to continue the run.
 
 Frozen backbone weights are never saved. `load(path)` downloads the base model by name and
 revision, then applies the saved weights on top, so a head-only checkpoint is a few hundred KB and
 a LoRA checkpoint a few MB.
 
-**Training state.** The optimizer keeps two extra values per trained weight. That is tiny for the
-head and adapters but can reach several GB with `tuning="full"`. `training_state` controls it:
+**Training state.** The optimizer keeps two extra values per trained weight, and the state adds an
+fp32 copy of each. That is tiny for the head and adapters but can reach several GB with
+`tuning="full"`. `training_state` controls it:
 - `"auto"` (default): included when it is under 100 MB, otherwise left out with a log line saying
   how to include it;
 - `True`: always included;
@@ -649,14 +672,19 @@ head and adapters but can reach several GB with `tuning="full"`. `training_state
 - with a saved training state, it resumes the same run: the same optimizer moments, the schedule
   at the step it reached, and the same validation slice and early-stopping counters, as if the run
   had not stopped. `epochs` counts the total, so a run saved at epoch 12 of 20 trains 8 more.
-  This needs the same training data; the saved state records a fingerprint of it, and if the data
-  differs, `fit` warm-starts instead and says so in the log;
+  This needs the same training data and the same run settings (batch size, learning rates,
+  optimizer, schedule, validation slice and interval, seed, balancing, option shuffling, label
+  smoothing); the saved state records a fingerprint of them, and if any differ, `fit`
+  warm-starts instead and says so in the log. Stopping settings (`epochs`, `early_stopping`,
+  `n_iter_no_change`, `target_loss`) may change. A run that already trained all its `epochs` trains
+  nothing more until `epochs` is raised;
 - without one, it warm-starts: the trained weights are kept, and a new optimizer and schedule
   start from zero for `epochs` more epochs.
 
 Because `training_state="auto"` may or may not have saved the state, `fit` always logs which case
 applies when it starts, e.g. `resuming at epoch 12 of 20` or
-`warm start (no saved training state): training 20 epochs`.
+`warm start (no saved training state): training 20 epochs`; a fresh model logs
+`training from scratch: up to 20 epochs`.
 
 Either way, a structural parameter changed since the last fit (base model, layers, layout, head
 shape, token limits, tuning mode) starts over instead, as before.
@@ -678,14 +706,14 @@ src/sysone/
     qwen.py
   layout.py            # parallel and sequential position ids, option ids, masks
   heads.py             # compact and full decision heads
-  tuning.py            # truncate, freeze, LoRA / QLoRA by layer index (peft, bitsandbytes)
+  tuning.py            # layer plans, freezing, LoRA / QLoRA by layer index (peft, bitsandbytes)
   losses.py            # soft_ce, rlcd
   calibration.py       # temperature fitting
-  training.py          # training loop, validation split, balancing, early stopping
+  training.py          # training loop, validation split, balancing, stopping, resumable state
   features.py          # cached option and summary vectors for a frozen backbone
   cache.py             # the on-disk feature cache: sets, size cap, cache_info, clear_cache
   evaluation.py        # evaluate reports, baselines, compare
-  checkpoint.py        # save / load
+  checkpoint.py        # adapter, trained-layer and training-state files of a saved model
 tests/                 # combination matrix per architecture (tiny random configs),
                        # option-order invariance, layout goldens, data input forms, answer schema
 examples/              # notebooks: quickstart, public datasets with hard and soft labels
