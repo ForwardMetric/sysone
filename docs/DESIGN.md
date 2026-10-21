@@ -820,8 +820,8 @@ src/sysone/
   layout.py            # parallel and sequential position ids, option ids, masks
   heads.py             # compact and full decision heads
   tuning.py            # layer plans, freezing, LoRA / QLoRA by layer index (peft, bitsandbytes)
-  losses.py            # soft_ce, rlcd
-  calibration.py       # temperature fitting
+  losses.py            # soft_ce, the ranked-probability term for score questions, rlcd
+  calibration.py       # temperature fitting, ECE
   training.py          # training loop, validation split, balancing, stopping, resumable state
   features.py          # cached option and summary vectors for a frozen backbone
   cache.py             # the on-disk feature cache: sets, size cap, cache_info, clear_cache
@@ -833,7 +833,9 @@ examples/              # notebooks: quickstart, public datasets with hard and so
 docs/
 ```
 
-Dependencies are torch, transformers (5.0 or later, for per-layer-type masks) and peft. Because QLoRA is the default, bitsandbytes is
+Dependencies are torch (2.8 or later: training the backbone on Apple GPUs fails in earlier
+versions), transformers (5.1 or later: 5.0's ModernBERT ignores per-layer-type masks) and peft. The
+minimums in `pyproject.toml` are the ones CI tests, by installing the lowest allowed versions. Because QLoRA is the default, bitsandbytes is
 also a regular dependency on platforms where it supports 4-bit training, selected with a
 platform marker in `pyproject.toml`. Elsewhere it is not installed and the fallback to `"lora"`
 applies.

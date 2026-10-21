@@ -46,11 +46,19 @@ def resolve_device(device) -> torch.device:
 _PRECISIONS = {"fp32": torch.float32, "bf16": torch.bfloat16, "fp16": torch.float16}
 
 
+def native_bf16(device: torch.device) -> bool:
+    """Whether a CUDA GPU computes in bf16 natively: Ampere (compute capability 8.0) and newer.
+    `torch.cuda.is_bf16_supported()` also counts emulation, which is far slower than fp16."""
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    return torch.cuda.get_device_capability(index)[0] >= 8
+
+
 def resolve_dtype(precision: str, device: torch.device) -> torch.dtype:
-    """The dtype for frozen backbone weights. "auto" is bf16 where the device supports it."""
+    """The dtype for frozen backbone weights. "auto" is bf16 where the device supports it natively,
+    fp16 on CUDA GPUs without native bf16 (such as the T4), and fp32 on the CPU."""
     if precision == "auto":
-        if device.type == "cuda" and torch.cuda.is_bf16_supported():
-            return torch.bfloat16
+        if device.type == "cuda":
+            return torch.bfloat16 if native_bf16(device) else torch.float16
         if device.type == "mps":
             return torch.bfloat16
         return torch.float32
