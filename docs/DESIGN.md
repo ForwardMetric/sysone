@@ -189,6 +189,7 @@ DecoderModel(
 
     # objective and data
     loss="soft-ce",             # "soft-ce" | "rlcd"
+    ordinal_weight=1.0,         # how strongly score questions respect level order (RPS term); 0 = off
     label_smoothing=0.0,
     shuffle_options="auto",     # "auto" | None | list of question types
     balance=None,               # None | "category" | "question"
@@ -200,6 +201,8 @@ DecoderModel(
     cache_max_gb=5,             # size cap for cache_dir; least recently used sets are deleted first
     precision="auto",           # "auto" | "fp32" | "bf16" | "fp16"
     gradient_checkpointing="auto",
+    checkpoint_dir=None,        # folder fit saves to when training ends or is interrupted; None = never
+    checkpoint_every=None,      # also save every this many optimizer steps; None = only at the end
     device="auto",              # "auto" | "cuda" | "mps" | "cpu"
     seed=0,
     verbose=1,
@@ -313,6 +316,8 @@ nothing scales them with the data, which would be guesswork that fails silently.
   `"lora"` / `"qlora"` give a warning that they are ignored.
 - `cache_dir` with a backbone that learns gives a warning that it is ignored: features can only
   be cached when the backbone is frozen.
+- `ordinal_weight` must be a number of at least 0; `checkpoint_every` must be None or a positive
+  integer, and needs `checkpoint_dir`.
 - `target_loss` must be a positive number or None; `validation_interval` must be `"auto"` or a
   positive integer; `cache_max_gb` must be positive.
 
@@ -553,8 +558,8 @@ can then be used or saved, and a later `fit` resumes from the last completed ste
 
 **Frozen backbone (`tuning="head"`).** Nothing in the backbone learns, so:
 - the backbone runs without gradients and in eval mode (no dropout);
-- its weights are loaded in bf16 where the device supports it, otherwise fp32, which halves
-  memory;
+- its weights are loaded in half precision, which halves memory: bf16 where the device supports
+  it natively, fp16 on CUDA GPUs without native bf16 (such as the T4), otherwise fp32;
 - with `cache_features="auto"`, the option and summary vectors for every example are computed
   once and cached on the CPU in half precision. Every epoch then trains the head on the cache,
   without running the backbone again.
@@ -565,9 +570,10 @@ fit in memory, the backbone is run again each epoch instead.
 
 **Backbone that learns (`"lora"`, `"qlora"`, `"full"`).**
 - Weights being trained (adapters, fully trained layers, embeddings) are kept in fp32 for the
-  optimizer. The forward pass runs under bf16 autocast where supported. With `"qlora"` the frozen
-  weights are stored in 4-bit; with `"lora"` and `"full"` they are loaded in bf16 where supported,
-  since they are never updated.
+  optimizer. The forward pass runs under autocast to the backbone's half precision (bf16, or fp16
+  on CUDA GPUs without native bf16). With fp16 the loss is scaled before the backward pass, so
+  small gradients don't round to zero. With `"qlora"` the frozen weights are stored in 4-bit; with
+  `"lora"` and `"full"` they are loaded in half precision, since they are never updated.
 - Gradient checkpointing (`"auto"`) turns on when sequences are long enough that activations,
   not weights, dominate memory: when the estimated activations of one forward pass (about
   `34·s·h + 5·a·s²` bytes per example and layer, at the 95th-percentile length, for the layers
@@ -607,20 +613,68 @@ and never copied by sysone.
 
 Losses:
 - `soft-ce` (default): cross-entropy against the target distribution, over each row's own
-  options. For hard labels this is ordinary cross-entropy.
+  options. For hard labels this is ordinary cross-entropy. Score questions add a
+  ranked-probability term (below).
 - `rlcd`: a policy-gradient term over noisy logit samples, rewarded by a proper scoring rule
   (log, spherical, and ranked-probability for score questions), plus soft cross-entropy.
 
+**Score questions are ordered.** Cross-entropy treats a score's levels as unrelated categories:
+predicting level 2 when the answer is 3 costs as much as predicting 0. For score questions the
+loss adds `ordinal_weight` times the **ranked probability score** (RPS), the squared distance between the
+predicted and target cumulative distributions, averaged over the `K − 1` thresholds between
+levels:
+
+```
+RPS = 1/(K−1) · Σ_{k=1}^{K−1} (P(level < k) − T(level < k))²
+```
+
+It is 0 for a perfect prediction and at most 1, whatever the number of levels, and near misses
+cost less than far ones. It is a proper scoring rule, so like cross-entropy it is minimised only
+by honest probabilities, which keeps it compatible with calibration; soft rater targets work as
+they are. Cross-entropy stays in the loss because RPS alone gives a weak signal when the model is
+confidently wrong. Choice and noul questions are unaffected, and so are the head and the
+checkpoint format.
+
+`ordinal_weight` names what it controls rather than the method, so the method can change without a
+rename. Its default, 1.0, weights the two terms equally. Equal weight is not equal influence:
+cross-entropy on score questions is typically around 1, while RPS, a squared gap between
+probabilities, is typically 0.05 to 0.2, so cross-entropy still dominates at 1.0. The default is
+to be confirmed by measurement (score error and exact-level accuracy at 0, 0.5, 1 and 2).
+
+One weight applies to every score question in the data. That suits most datasets, because RPS is
+on the same 0-to-1 scale for any number of levels, so a 4-level weather scale and a 10-level spam
+scale count evenly. Different score questions could still want different weights, for example a
+scale raters disagree on more. The planned extension, built only if measurements call for it, is
+a dict keyed like `report_["by_question"]`:
+
+```python
+DecoderModel(ordinal_weight={"severity": 2.0, "operations/spam": 0.5, "*": 1.0})
+```
+
+Keys are a question id, or `category/qid` where ids repeat across categories, with `"*"` for all
+other score questions. A plain number keeps meaning "this weight for every score question", so the
+extension changes nothing for existing code. The weight stays a model setting rather than a key
+inside question definitions, which `predict` and the Jev contract share.
+
 ### Calibration
 
-With `calibrate=True`, temperatures are fitted after training on the validation slice, with LBFGS
-on log T:
+With `calibrate=True`, temperatures are fitted after training on the validation slice: logits are
+divided by a temperature `T`, chosen to minimise the cross-entropy against the validation targets
+(soft targets as they are), with LBFGS on `log T`:
 - one temperature per question type;
-- one per (type, option-count bucket), with buckets 2, 3–5, 6–10 and 11+, when a bucket has
-  enough rows;
+- one per (type, option-count bucket), with buckets 2, 3–5, 6–10 and 11+, for buckets with at least
+  50 validation questions; smaller buckets use their type's temperature;
+- a type with fewer than 50 validation questions keeps `T = 1`, and the log says so;
 - every temperature clamped to [0.5, 5].
 
-A per-category temperature is optional, for categories with enough validation rows.
+Temperatures are refitted at the end of every `fit`, including a resumed one, and saved with the
+model. `predict` and `evaluate` apply them, so `probabilities` and `answer_confidence` are
+calibrated; `answer_confidence` is the calibrated probability of the answer given (the top option,
+or for noul the larger of P(true) and P(false)). `report_` records the temperatures and the
+validation slice's expected calibration error before and after.
+
+A per-category temperature is optional, for categories with enough validation rows (not in
+milestone 3).
 
 The same slice also chose the stopping epoch. Each temperature is a single number per bucket, so
 reusing the slice biases it very little, and it avoids holding back a second slice of the data.
@@ -651,7 +705,14 @@ A report is a plain dict: `n_questions`, `skipped`, and the metrics `overall`, `
 - **score_error**: for score questions, the absolute gap between predicted and target expected
   level.
 - **auc**: for noul questions, when both labels occur.
-- **expected calibration error** before and after temperature scaling, once calibration exists.
+- **brier**: the squared distance between predicted and target distributions, summed over a
+  question's options and averaged over questions; lower is better.
+- **ece**: expected calibration error of the top option. Questions are grouped into 15 equal-width
+  bins by the predicted probability of their top option; in each bin, that probability is compared
+  with how often the top option is right, and the gaps are averaged, weighted by bin size.
+
+`model.evaluate(data, calibrated=False)` scores the probabilities before temperature scaling, so
+the effect of calibration shows as two rows in `compare`.
 
 Baselines:
 - **random guess**: every option equally likely.
@@ -709,6 +770,37 @@ applies when it starts, e.g. `resuming at epoch 12 of 20` or
 
 Either way, a structural parameter changed since the last fit (base model, layers, layout, head
 shape, token limits, tuning mode) starts over instead, as before.
+
+#### Autosave
+
+A long run on a cloud notebook can be lost to a disconnect. Autosave is off by default, so a
+default run spends no time writing to disk. It is turned on with `checkpoint_dir`:
+
+| settings | what is saved |
+|---|---|
+| neither (default) | nothing |
+| `checkpoint_dir` | when training ends or is interrupted (Ctrl-C, or an error during training) |
+| `checkpoint_dir` and `checkpoint_every=N` | also every `N` optimizer steps |
+| `checkpoint_every` alone | rejected: there is nowhere to save |
+
+- **How often:** a full-tuning training state can be gigabytes, and writing it to a network drive
+  takes time, so `checkpoint_every` is a trade-off between time spent saving and work lost to a
+  disconnect. The log shows the size and duration of each save to help choose it.
+- **What:** a complete `save(checkpoint_dir, training_state=True)`. The model files hold the best
+  weights so far; the training state holds the last step's. `Model.load(checkpoint_dir)` gives a
+  usable model at any time, and `Model.load(checkpoint_dir).fit(<the same data>)` resumes the run
+  exactly.
+- **Safely:** each save is written to a temporary folder next to `checkpoint_dir` and swapped in
+  when complete, so a disconnect during a save leaves the previous checkpoint intact. Only the
+  latest checkpoint is kept.
+- **Restart information:** each save also writes `run.json`, a small readable summary for picking
+  the run up again: the model class, sysone version, step and epoch reached out of `epochs`, the
+  best validation loss and its step, when it was saved, the training data's fingerprint, the data
+  file's path when `fit` was given a path, and the resume command. `fit` logs the folder and the
+  interval when it starts.
+
+The data itself is never copied into the checkpoint; resuming needs the same data, checked
+against the fingerprint (a different dataset warm-starts, as above).
 
 ## Repository layout
 
@@ -795,10 +887,51 @@ barely moved ModernBERT; see `tuning`).
 questions (best measured once backbone training is in, so the two effects aren't mixed), and
 calibration.
 
-### Milestone 3: calibration and reporting
+### Milestone 3: better scores, calibrated probabilities, sturdier long runs
 
-Temperature fitting per question type and option-count bucket, expected calibration error in
-reports, and `answer_confidence` that means what it says.
+**Goal:** close the largest measured accuracy gap (score questions), make the reported
+probabilities mean what they say, and make long GPU runs survive disconnects and older GPUs.
+Release as 0.3.0.
+
+**In scope:**
+1. **Ranked-probability term for score questions** (`ordinal_weight`; see Losses). It changes the
+   model's outputs, so it comes before calibration.
+2. **Calibration** as described under Calibration: temperatures per type and option-count bucket,
+   fitted on the validation slice, saved and applied; a calibrated `answer_confidence`.
+3. **Reporting:** `brier` and `ece` in every report, `evaluate(..., calibrated=False)`, and the
+   calibration summary in `report_`.
+4. **Autosave**, off by default (`checkpoint_dir`, `checkpoint_every`, `run.json`; see Autosave).
+5. **GPUs without native bf16** (for example the T4): `precision="auto"` uses fp16 there, with loss
+   scaling when the backbone learns, instead of slow emulated bf16. Native support is checked
+   without counting emulation.
+6. **Dependency minimums** raised to versions that are tested, and tested in CI.
+7. **CI:** GitHub Actions runs ruff and the fast tests on every pull request, on CPU-only torch,
+   with both the newest dependencies and the declared minimums. (Publishing from CI is left for
+   later.)
+8. **Tests:** RPS against hand-computed values (hard and soft targets, 2 to 11 levels); temperature
+   fitting recovers a known temperature on synthetic logits; buckets fall back below 50
+   questions; ECE and Brier against hand-computed values; autosave writes atomically, keeps the
+   best weights in the model files, resumes exactly from an autosave, and saves on interrupt;
+   fp16 with loss scaling takes a training step (CUDA only).
+9. **Measurements** on a CUDA GPU, recorded in the notebooks' saved outputs and in this document:
+   - `ordinal_weight`: score error and exact-level accuracy for 0, 0.5, 1 and 2 on typed-decisions and
+     bev-decision, to set the default, also per score question (`by_question`) to see whether
+     different questions want different weights (the dict extension under Losses);
+   - three seeds of fully tuned ModernBERT-base on typed-decisions (the 0.79 result), with
+     accuracy per question type;
+   - the unmeasured learning-rate defaults: ModernBERT adapters and Qwen3 full tuning;
+   - saving and reloading a 4-bit QLoRA model;
+   - gradient checkpointing's cost on a GPU, to revisit the `"auto"` rule.
+
+**Done when:** all of the above is in and tested, the notebooks show score error, Brier and ECE
+before and after calibration, the 0.79 result holds across seeds, and 0.3.0 is on PyPI with the
+notebooks installing `sysone>=0.3`.
+
+**Not in milestone 3:** per-question `ordinal_weight` (unless the measurements call for it);
+per-category temperatures; reading the encoder summary as an average
+instead of `[CLS]` (full tuning already works for ModernBERT); more base models (Llama, Mistral);
+training one model on many decision datasets before specialising; publishing from CI;
+`head="full"`; `loss="rlcd"`.
 
 ## Open items
 
