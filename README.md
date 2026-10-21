@@ -47,17 +47,26 @@ model.save("my-model")
 model = DecoderModel.load("my-model")
 ```
 
+To measure the model on held-out labelled rows, and compare it with simple baselines:
+
+```python
+from sysone import baselines, compare
+
+results = baselines(test_rows, train=rows)      # random guess, average answer
+results["trained"] = model.evaluate(test_rows)
+compare(results)                                # accuracy per question type, as a table
+```
+
 Answers follow the Jev `/v1/systemone` response shape. Training data can be records like the
 above, records plus a shared question catalog, a long DataFrame, or a `.jsonl` / `.csv` /
 `.parquet` file. Labels go in `expected`, in a `label` inside each question, or as soft `gold`
 probabilities.
 
-Runnable examples:
+Example notebooks, each comparing accuracy before and after training:
 
-```bash
-uv run python examples/quickstart.py                                      # synthetic support tickets
-uv run --with datasets python examples/public_dataset.py --max-rows 5000  # a public dataset
-```
+- [examples/quickstart.ipynb](examples/quickstart.ipynb): synthetic support tickets, a few minutes;
+- [examples/bev_dataset.ipynb](examples/bev_dataset.ipynb): bev-decision-150K, 18 domains, hard labels;
+- [examples/typed_decisions.ipynb](examples/typed_decisions.ipynb): typed-decisions, soft labels from several raters.
 
 ## Status
 

@@ -19,6 +19,7 @@ from .architectures.base import Architecture
 from .architectures.registry import architecture_for, architecture_from_spec, architecture_spec
 from .data import Example, examples_from
 from .encoding import Encoder, measure_limits
+from .evaluation import score
 from .features import cache_bytes, collate_features, extract
 from .heads import CompactHead
 from .layout import LAYOUTS
@@ -443,16 +444,34 @@ class SystemOneModel:
             rows = list(X)
         examples, _ = examples_from(rows, None, labeled=False)
         results = [{"answers": {}, "usage": {"input_tokens": 0, "output_tokens": 0}} for _ in rows]
-        if examples:
-            encoder = self._encoder()
-            encoded = [encoder.encode(ex.state, ex.question) for ex in examples]
-            feats = extract(self.architecture_, self.backbone_, encoded, self.tokenizer_.pad_token_id, self.device_)
-            probs = self._probabilities(feats, [ex.question.type_index for ex in examples])
-            for ex, enc, p in zip(examples, encoded, probs):
-                result = results[ex.row]
-                result["answers"][ex.qid] = answer(ex.question, p[: ex.question.k])
-                result["usage"]["input_tokens"] += len(enc.input_ids)
+        probs, lengths = self._predict_examples(examples)
+        for ex, n_tokens, p in zip(examples, lengths, probs):
+            result = results[ex.row]
+            result["answers"][ex.qid] = answer(ex.question, p[: ex.question.k])
+            result["usage"]["input_tokens"] += n_tokens
         return results[0] if single else results
+
+    def evaluate(self, data, questions: Mapping | None = None) -> dict:
+        """Score the model on labelled data, in any form `fit` accepts.
+
+        Returns a plain dict with `overall`, `by_type`, `by_category` and `by_question` metrics
+        (accuracy, distance, log_loss, and score_error / auc where they apply). Hard and soft
+        labels are scored the same way; see `sysone.evaluation` for the definitions.
+        """
+        self._check_fitted()
+        examples, skipped = examples_from(data, questions, labeled=True)
+        probs, _ = self._predict_examples(examples)
+        return score(examples, probs, skipped)
+
+    def _predict_examples(self, examples: list[Example]) -> tuple[list[list[float]], list[int]]:
+        """Option probabilities (temperature-scaled) and sequence lengths for each example."""
+        if not examples:
+            return [], []
+        encoder = self._encoder()
+        encoded = [encoder.encode(ex.state, ex.question) for ex in examples]
+        feats = extract(self.architecture_, self.backbone_, encoded, self.tokenizer_.pad_token_id, self.device_)
+        probs = self._probabilities(feats, [ex.question.type_index for ex in examples])
+        return probs, [len(e.input_ids) for e in encoded]
 
     @torch.no_grad()
     def _probabilities(self, feats, qtypes, batch_size: int = 256) -> list[list[float]]:

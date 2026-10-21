@@ -33,6 +33,20 @@ def test_fit_predict_save_load(tiny_model, tmp_path):
     assert loaded.max_state_tokens_ == model.max_state_tokens_
 
 
+def test_evaluate_matches_predict(tiny_model):
+    kind, path = tiny_model
+    rows = make_rows(20)
+    model = _model(kind, path, epochs=2).fit(rows)
+    report = model.evaluate(rows)
+    assert report["n_questions"] == 30 and set(report["by_type"]) == {"choice", "score", "noul"}
+    assert set(report["by_category"]) == {"sales", "operations"}
+    # accuracy from evaluate equals accuracy computed by hand from predict
+    preds = model.predict(rows)
+    hits = [preds[i]["answers"]["color"]["choice"] == r["expected"]["color"]
+            for i, r in enumerate(rows) if "color" in r["questions"]]
+    assert report["by_type"]["choice"]["accuracy"] == pytest.approx(sum(hits) / len(hits))
+
+
 def test_training_reduces_loss(tiny_model):
     kind, path = tiny_model
     model = _model(kind, path, epochs=8, early_stopping=False, validation_fraction=0.0).fit(make_rows(60))
