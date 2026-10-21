@@ -1,0 +1,55 @@
+[project]
+name = "sysone"
+dynamic = ["version"]
+description = "Fine-tune and calibrate system-one decision models with a scikit-learn style fit / predict interface."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Goutham Balaraman" }]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "torch>=2.4",
+    "transformers>=5.0",
+    "peft>=0.13",
+    "safetensors>=0.4",
+    "huggingface-hub>=0.25",
+    # 4-bit training (the default tuning="qlora") is supported on these platforms only;
+    # elsewhere sysone falls back to tuning="lora".
+    "bitsandbytes>=0.45; sys_platform == 'linux' or sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+pandas = ["pandas>=2.0"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "pandas>=2.0",
+    "tokenizers>=0.20",
+]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/sysone/version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sysone"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: downloads real models from the Hugging Face Hub (deselect with -m 'not slow')"]
+addopts = "-m 'not slow'"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["UP031", "B905"]  # %-formatting is used throughout; zips pair equal-length lists

@@ -382,8 +382,8 @@ Each option is truncated to `max_option_tokens` and the state to `max_state_toke
   shuffling during training.
 
 Mask details:
-- Masks are built in the model's dtype with `torch.finfo(dtype).min` for blocked positions, not
-  `-inf`, to avoid NaNs in half precision.
+- Masks are boolean (True where attention is allowed), which `sdpa` accepts directly. No `-inf`
+  is ever added to scores, so half precision can't produce NaNs from the mask.
 - Padded rows attend only to themselves, so no row is fully masked.
 - Sliding-window layers measure their window in position ids, not sequence index. Options share
   positions, so a sequence-index window would let one option see more context than another.
