@@ -65,8 +65,14 @@ probabilities.
 Example notebooks, each comparing accuracy before and after training:
 
 - [examples/quickstart.ipynb](examples/quickstart.ipynb): synthetic support tickets, a few minutes;
-- [examples/bev_dataset.ipynb](examples/bev_dataset.ipynb): bev-decision-150K, 18 domains, hard labels;
-- [examples/typed_decisions.ipynb](examples/typed_decisions.ipynb): typed-decisions, soft labels from several raters.
+- bev-decision-150K, 18 domains, hard labels:
+  [examples/decoder_bev_decision.ipynb](examples/decoder_bev_decision.ipynb) (Qwen3) and
+  [examples/encoder_bev_decision.ipynb](examples/encoder_bev_decision.ipynb) (ModernBERT);
+- typed-decisions, soft labels from several raters:
+  [examples/decoder_typed_decisions.ipynb](examples/decoder_typed_decisions.ipynb) (Qwen3) and
+  [examples/encoder_typed_decisions.ipynb](examples/encoder_typed_decisions.ipynb) (ModernBERT).
+
+Notebooks other than the quickstart are named `<model type>_<dataset>.ipynb`.
 
 ## Status
 
