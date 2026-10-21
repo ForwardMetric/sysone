@@ -9,7 +9,9 @@ The head always trains. With `train_embeddings` the token embeddings train too.
 
 from __future__ import annotations
 
+import contextlib
 import re
+import sys
 import warnings
 from dataclasses import dataclass
 
@@ -110,8 +112,41 @@ def add_adapters(backbone: nn.Module, config) -> None:
     """Put LoRA adapters on `backbone` in place; the model stays a plain Hugging Face model."""
     from peft import inject_adapter_in_model
 
-    inject_adapter_in_model(config, backbone)
+    with _ignore_incompatible_torchao():
+        inject_adapter_in_model(config, backbone)
     backbone.sysone_lora_config = config
+
+
+@contextlib.contextmanager
+def _ignore_incompatible_torchao():
+    """peft refuses to add any adapter when an older torchao is installed (Google Colab ships one),
+    although sysone never uses torchao. In that case, tell peft torchao isn't available while
+    adapters are added, instead of asking the user to uninstall it."""
+    from peft import import_utils
+
+    try:
+        import_utils.is_torchao_available()
+        problem = None
+    except ImportError as exc:
+        problem = exc
+    if problem is None:
+        yield
+        return
+    warnings.warn("ignoring the installed torchao (%s); sysone doesn't use it" % problem, UserWarning, stacklevel=4)
+    original = import_utils.is_torchao_available
+    holders = [m for name, m in list(sys.modules.items())
+               if name.startswith("peft") and getattr(m, "is_torchao_available", None) is original]
+    for module in holders:
+        module.is_torchao_available = _torchao_unavailable
+    try:
+        yield
+    finally:
+        for module in holders:
+            module.is_torchao_available = original
+
+
+def _torchao_unavailable() -> bool:
+    return False
 
 
 def is_adapter(name: str) -> bool:

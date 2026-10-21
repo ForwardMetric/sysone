@@ -171,3 +171,25 @@ def test_gradient_checkpointing_setting(tiny_models, checkpointing):
     model = _model("modernbert", tiny_models["modernbert"], tuning="lora", epochs=1,
                    gradient_checkpointing=checkpointing).fit(make_rows(10))
     assert model.backbone_.is_gradient_checkpointing is checkpointing
+
+
+def test_an_old_torchao_is_ignored(tiny_models, monkeypatch, tmp_path):
+    # Google Colab ships a torchao older than peft accepts; peft then refuses to add any adapter
+    import sys
+
+    from peft import import_utils
+
+    def old_torchao():
+        raise ImportError("Found an incompatible version of torchao. Found version 0.10.0, but only versions "
+                          "above 0.16.0 are supported")
+
+    original = import_utils.is_torchao_available
+    for name, module in list(sys.modules.items()):
+        if name.startswith("peft") and getattr(module, "is_torchao_available", None) is original:
+            monkeypatch.setattr(module, "is_torchao_available", old_torchao)
+    with pytest.warns(UserWarning, match="ignoring the installed torchao"):
+        model = _model("qwen3", tiny_models["qwen3"], tuning="lora", epochs=1).fit(make_rows(10))
+    assert import_utils.is_torchao_available is old_torchao  # restored afterwards
+    with pytest.warns(UserWarning, match="ignoring the installed torchao"):
+        loaded = DecoderModel.load(model.save(tmp_path / "m"), verbose=0)
+    assert loaded.predict(STATE, QUESTIONS) == model.predict(STATE, QUESTIONS)
