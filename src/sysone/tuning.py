@@ -69,7 +69,7 @@ def layer_plan(tuning: str, n_layers: int, trainable_layers, lora_layers, train_
 
 def quantization_available(device: torch.device) -> bool:
     """4-bit and 8-bit loading need bitsandbytes and, in practice, an NVIDIA GPU."""
-    if device.type != "cuda":
+    if device.type != "cuda" or not torch.cuda.is_available():
         return False
     try:
         import bitsandbytes  # noqa: F401
