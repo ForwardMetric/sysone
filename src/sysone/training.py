@@ -50,7 +50,7 @@ class TrainSettings:
     warmup_ratio: float
     grad_clip: float
     early_stopping: bool
-    n_iter_no_change: int
+    n_iter_no_change: int  # epochs without a lower validation loss before stopping
     target_loss: float | None
     validation_interval: int  # optimizer steps between validation checks
     micro_batch: int  # examples per forward pass to start with; halved when memory runs out
@@ -65,7 +65,7 @@ class TrainState:
     step: int = 0  # optimizer steps done
     last_check: int = 0  # step of the last validation check
     best_loss: float = math.inf
-    stale: int = 0  # checks in a row without a lower validation loss
+    best_step: int = 0  # step of the check with the lowest validation loss
     running_loss: float = 0.0  # training loss summed since the last check
     running_n: int = 0
     rng: dict = field(default_factory=dict)  # torch generator states after the last step
@@ -271,8 +271,9 @@ def train(net: Network, train_items: Callable[[int], Sequence[TrainItem]], n_tra
     `train_items(epoch)` returns that epoch's training items: the same cached list every epoch, or
     fresh ones when options are shuffled. Validation runs every `validation_interval` optimizer
     steps and at the end; each check appends a record to `history`. Training stops after
-    `epochs`, after `n_iter_no_change` checks without a lower validation loss (with early
-    stopping), or once the monitored loss reaches `target_loss`. The weights from the best check
+    `epochs`, after `n_iter_no_change` epochs without a lower validation loss (with early
+    stopping; counted in epochs however often validation runs), or once the monitored loss
+    reaches `target_loss`. The weights from the best check
     are then restored, and `state` keeps the last weights so a later call can resume.
 
     A `KeyboardInterrupt` stops training the same way and is then raised again.
@@ -335,9 +336,7 @@ def train(net: Network, train_items: Callable[[int], Sequence[TrainItem]], n_tra
             metrics = evaluate_items(net, val_items)
             record.update(val_loss=metrics["loss"], val_accuracy=metrics["accuracy"])
             if record["val_loss"] < state.best_loss - 1e-6:
-                state.best_loss, state.stale, best = record["val_loss"], 0, net.snapshot()
-            else:
-                state.stale += 1
+                state.best_loss, state.best_step, best = record["val_loss"], state.step, net.snapshot()
         state.running_loss, state.running_n, state.last_check = 0.0, 0, state.step
         history.append(record)
         log("epoch %g/%d  step %d  " % (record["epoch"], settings.epochs, state.step)
@@ -347,8 +346,9 @@ def train(net: Network, train_items: Callable[[int], Sequence[TrainItem]], n_tra
             log("stopping: %s loss %.4f reached target_loss=%g"
                 % ("validation" if have_val else "training", monitored, settings.target_loss))
             return True
-        if stop_early and state.stale >= settings.n_iter_no_change:
-            log("early stopping: no lower validation loss in %d checks" % state.stale)
+        if stop_early and state.step - state.best_step >= settings.n_iter_no_change * steps_per_epoch:
+            log("early stopping: no lower validation loss in %g epochs"
+                % round((state.step - state.best_step) / steps_per_epoch, 3))
             return True
         return False
 

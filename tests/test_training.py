@@ -140,3 +140,16 @@ def test_training_state_saving(tiny_models, tmp_path, monkeypatch, capsys):
     assert (model.save(tmp_path / "b", training_state=True) / "training_state").is_dir()
     with pytest.raises(ValueError, match="training_state"):
         model.save(tmp_path / "c", training_state="yes")
+
+
+@pytest.mark.parametrize("patience", [1, 2])
+def test_patience_counts_epochs_however_often_validation_runs(tiny_models, monkeypatch, patience):
+    import sysone.training
+
+    losses = iter(range(1, 1000))  # the first check is the best; every later one is worse
+    monkeypatch.setattr(sysone.training, "evaluate_items",
+                        lambda net, items, batch_size=64: {"loss": float(next(losses)), "accuracy": 0.0, "n": 1})
+    model = _model("qwen3", tiny_models["qwen3"], tuning="head", epochs=20, early_stopping=True,
+                   n_iter_no_change=patience, validation_interval=1).fit(make_rows(40))
+    steps_per_epoch = math.ceil(model.report_["n_train"] / 8)
+    assert [h["step"] for h in model.history_] == list(range(1, 2 + patience * steps_per_epoch))

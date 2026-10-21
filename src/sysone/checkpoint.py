@@ -74,7 +74,7 @@ def load_backbone_weights(backbone: nn.Module, path: Path) -> None:
 
 def save_training_state(state: TrainState, path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
-    meta = {k: getattr(state, k) for k in ("fingerprint", "step", "last_check", "stale", "running_loss",
+    meta = {k: getattr(state, k) for k in ("fingerprint", "step", "last_check", "best_step", "running_loss",
                                            "running_n")}
     meta["best_loss"] = state.best_loss if math.isfinite(state.best_loss) else None
     with open(path / _STATE_META, "w", encoding="utf-8") as f:
@@ -90,4 +90,7 @@ def load_training_state(path: Path) -> TrainState | None:
         meta = json.load(f)
     tensors = torch.load(path / _STATE_TENSORS, map_location="cpu", weights_only=True)
     best = meta.pop("best_loss")
+    if "stale" in meta:  # saved before patience was counted in epochs: assume the best check was the last one
+        meta.pop("stale")
+        meta["best_step"] = meta["last_check"]
     return TrainState(**meta, best_loss=math.inf if best is None else best, **tensors)

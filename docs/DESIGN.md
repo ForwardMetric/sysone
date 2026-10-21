@@ -181,7 +181,7 @@ DecoderModel(
     # stopping and validation
     early_stopping=True,
     validation_fraction=0.1,    # held out for early stopping, calibration and the report
-    n_iter_no_change=3,         # validation checks without improvement before stopping
+    n_iter_no_change=3,         # epochs without improvement before stopping
     target_loss=None,           # stop as soon as validation loss reaches this value
     validation_interval="auto", # optimizer steps between validation checks; "auto" = once per epoch
                                 # for tuning="head", about 10 checks per epoch otherwise
@@ -510,8 +510,9 @@ trained on.
 
 **Stopping.** Training ends at whichever comes first:
 - `epochs` have run (the upper bound);
-- with `early_stopping`, `n_iter_no_change` validation checks in a row without a lower
-  validation loss;
+- with `early_stopping`, `n_iter_no_change` epochs without a lower validation loss. Patience is
+  counted in epochs however often validation runs: training stops at the first check that comes
+  `n_iter_no_change` epochs after the best one;
 - with `target_loss`, the validation loss reaches `target_loss`.
 
 Validation runs every `validation_interval` optimizer steps. `"auto"` means once per epoch for
