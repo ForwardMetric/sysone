@@ -124,6 +124,9 @@ def _ignore_incompatible_torchao():
     adapters are added, instead of asking the user to uninstall it."""
     from peft import import_utils
 
+    if not hasattr(import_utils, "is_torchao_available"):  # older peft: no such check
+        yield
+        return
     try:
         import_utils.is_torchao_available()
         problem = None
