@@ -179,6 +179,9 @@ def test_an_old_torchao_is_ignored(tiny_models, monkeypatch, tmp_path):
 
     from peft import import_utils
 
+    if not hasattr(import_utils, "is_torchao_available"):
+        pytest.skip("this peft version has no torchao check to work around")
+
     def old_torchao():
         raise ImportError("Found an incompatible version of torchao. Found version 0.10.0, but only versions "
                           "above 0.16.0 are supported")

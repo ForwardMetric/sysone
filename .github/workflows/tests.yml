@@ -1,0 +1,39 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # the newest versions of every dependency
+          - name: newest dependencies
+            python: "3.12"
+            resolution: highest
+          # the minimums declared in pyproject.toml, on the oldest supported Python
+          - name: minimum dependencies
+            python: "3.10"
+            resolution: lowest-direct
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        # CPU-only torch keeps the download small; the fast tests need no GPU.
+        run: |
+          uv venv
+          uv pip install --torch-backend cpu --resolution ${{ matrix.resolution }} \
+            -e . "pytest>=8.0" "tokenizers>=0.20" "pandas>=2.0"
+      - name: Lint
+        if: matrix.resolution == 'highest'
+        run: uvx ruff check src tests
+      - name: Test
+        run: .venv/bin/python -m pytest -q
