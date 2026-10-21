@@ -130,9 +130,11 @@ parameters are saved with the checkpoint, so `load()` rebuilds the same model. A
 `fit` is stored on an attribute with a trailing underscore: `backbone_`, `tokenizer_`, `head_`,
 `temperatures_`, `history_`, `report_`.
 
-**The defaults give real fine-tuning at low memory.** The default is QLoRA: the backbone's
+**The defaults give real fine-tuning.** For `DecoderModel` the default is QLoRA: the backbone's
 weights are frozen in 4-bit, and small adapters on its top layers learn along with the decision
-head. Most users write `DecoderModel()` or change a single setting such as `tuning="head"`. No
+head, at low memory. For `EncoderModel` it is `"full"`: every layer trains, which a model the size
+of ModernBERT-base can afford and which is what made it learn (see `tuning`). Most users write
+`DecoderModel()` or `EncoderModel()`, or change a single setting such as `tuning="head"`. No
 setting requires knowing the base model's depth, hidden size, layer names or token lengths.
 
 ```python
@@ -168,8 +170,7 @@ DecoderModel(
 
     # optimization
     optimizer="adamw",          # "adamw" | "adamw_8bit" | "sgd"
-    encoder_lr=2.5e-5,          # fully trained backbone layers
-    adapter_lr=1e-4,            # adapter weights
+    backbone_lr="auto",         # "auto" = the architecture's default for what trains; or a number
     head_lr=1e-3,
     weight_decay=0.01,
     scheduler="cosine",         # "cosine" | "linear" | "constant"
@@ -205,12 +206,13 @@ DecoderModel(
 )
 ```
 
-`EncoderModel` takes the same arguments. Only two defaults differ:
+`EncoderModel` takes the same arguments. Only three defaults differ:
 
 | default      | `EncoderModel`                 | `DecoderModel`     |
 |--------------|--------------------------------|--------------------|
 | `model_name` | `answerdotai/ModernBERT-base`  | `Qwen/Qwen3-0.6B`  |
 | `num_layers` | `"all"`                        | `0.7`              |
+| `tuning`     | `"full"`                       | `"qlora"`          |
 
 #### `tuning`
 
@@ -219,12 +221,17 @@ DecoderModel(
 | `tuning`             | what trains                                        | `trainable_layers` | `lora_layers` | cost                                             |
 |----------------------|----------------------------------------------------|--------------------|---------------|--------------------------------------------------|
 | `"head"`             | the head only; the backbone is frozen              | 0                  | 0             | lowest and fastest; the backbone runs once (cached); least accurate |
-| `"qlora"` (default)  | adapters on the top 60% of kept layers; frozen weights in 4-bit | 0     | 0.6           | low memory; somewhat slower than `"lora"` because weights are unpacked from 4-bit on the fly |
+| `"qlora"` (`DecoderModel` default) | adapters on the top 60% of kept layers; frozen weights in 4-bit | 0     | 0.6           | low memory; somewhat slower than `"lora"` because weights are unpacked from 4-bit on the fly |
 | `"lora"`             | adapters on the top 60% of kept layers             | 0                  | 0.6           | more memory than `"qlora"`, faster per step      |
-| `"full"`             | every kept layer                                   | `"all"`            | 0             | highest                                          |
+| `"full"` (`EncoderModel` default) | every kept layer                      | `"all"`            | 0             | highest                                          |
 
-`"qlora"` is the default because it trains the backbone, not only the head, while keeping memory
-close to head-only. `"head"` is the choice when speed matters more than accuracy.
+`"qlora"` is `DecoderModel`'s default because it trains the backbone, not only the head, while
+keeping memory close to head-only. `EncoderModel` defaults to `"full"`, because adapters barely
+moved ModernBERT: on typed-decisions, LoRA on ModernBERT-base stayed near the average-answer
+baseline (0.53 test accuracy), while full tuning reached 0.79. ModernBERT was pretrained only to
+fill in masked words, and turning its `[CLS]` and `[MASK]` vectors into a decision means reshaping
+the whole network, which a few small adapters can't do. `"head"` is the choice when speed matters
+more than accuracy.
 
 Training the backbone costs roughly three forward passes per example per epoch, and no features
 can be cached because the backbone's outputs change every step. On a laptop GPU (Apple MPS) this
@@ -280,9 +287,16 @@ model of any depth.
   `choice` questions. Score levels and noul options have a meaningful order and are never
   shuffled.
 
-Learning rates and the other optimizer settings stay fixed defaults. They come from experiments,
-and scaling them automatically would be guesswork that fails silently. A head learning rate of
-`1e-3` has diverged with batches of about 16; lower it if `batch_size` is set that small.
+Learning rates and the other optimizer settings are fixed defaults that come from experiments;
+nothing scales them with the data, which would be guesswork that fails silently. There are two:
+- **`head_lr`** for the decision head, which starts from random weights and needs a rate well
+  above the backbone's. A head learning rate of `1e-3` has diverged with batches of about 16;
+  lower it if `batch_size` is set that small.
+- **`backbone_lr`** for whatever trains in the backbone. With `"auto"` it comes from the
+  architecture, which keeps one rate for fully trained layers and embeddings and one for adapters
+  (see the table below): pretrained models differ in how far a step should move them, and adapters
+  start at zero and need a larger rate than full weights. In a mixed setup each group gets its own
+  default. A number sets the rate for both groups.
 
 #### Validation
 
@@ -328,6 +342,12 @@ How the first two architectures translate each model-dependent parameter:
 | `max_len=None`              | `max_position_embeddings`                              | `max_position_embeddings`                       |
 | `head_dim="auto"`           | half of `hidden_size`                                  | half of `hidden_size`                           |
 | `tuning="qlora"`            | 4-bit on every `nn.Linear` in the kept layers          | same                                            |
+| `backbone_lr="auto"`, full  | `5e-5` (measured)                                      | `2.5e-5` (not yet measured)                     |
+| `backbone_lr="auto"`, adapters | `1e-3` (not yet measured; `1e-4` learned too slowly) | `1e-4` (measured)                              |
+
+The measured values come from typed-decisions runs on a CUDA GPU: fully tuned ModernBERT-base at
+`5e-5` reached 0.79 test accuracy, and Qwen3-0.6B adapters at `1e-4` reached 0.65. The others are
+starting points until they are measured.
 
 ModernBERT uses the name `Wo` in both its attention and its MLP blocks. Adapter targets are
 therefore matched by module path (`attn.Wo` vs `mlp.Wo`), never by bare module name.
@@ -495,8 +515,8 @@ Before training, a validation slice is split off: `validation_fraction` of the d
 by category. It is used for early stopping, for calibration and for the report, and is never
 trained on.
 
-- AdamW with separate learning rates for fully trained backbone layers, adapter weights and the
-  head.
+- AdamW with separate learning rates for the head, adapter weights, and fully trained layers and
+  embeddings (`head_lr`, and `backbone_lr` as above).
 - Cosine or linear schedule with warmup, gradient accumulation and gradient clipping.
 - Examples of similar length are batched together, so little compute is spent on padding.
 - Option shuffling as set by `shuffle_options`, with the target permuted to match.
@@ -767,9 +787,9 @@ head-only training.
    with head-only training on the same data. The LoRA sections default to smaller sizes so they
    finish on a laptop, with a note that a CUDA GPU is recommended for full-size runs.
 
-**Done when:** all of the above is in, the tests pass, and the notebooks show the LoRA results
-next to head-only. `"qlora"` is documented as untested on real 4-bit hardware until someone runs
-it on an NVIDIA GPU.
+**Done when:** all of the above is in, the tests pass, and the notebooks show the backbone-tuning
+results next to head-only: LoRA and QLoRA for the decoder, full tuning for the encoder (adapters
+barely moved ModernBERT; see `tuning`).
 
 **Deferred to later milestones:** `head="full"`, `loss="rlcd"`, an ordinal-aware loss for score
 questions (best measured once backbone training is in, so the two effects aren't mixed), and
@@ -782,13 +802,11 @@ reports, and `answer_confidence` that means what it says.
 
 ## Open items
 
-- `"qlora"` needs a run on an NVIDIA GPU to confirm 4-bit training works end to end; until then
-  only the fallback is tested.
+- `"qlora"` has trained and evaluated in real 4-bit on a Colab NVIDIA GPU (Qwen3-0.6B on
+  typed-decisions). Saving and reloading a 4-bit model has only been tested through the fallback;
+  it still needs a run on an NVIDIA GPU.
 - Whether bitsandbytes supports 4-bit training on Apple Silicon yet needs checking. If it does,
   the fallback there can be dropped.
-- Whether QLoRA is worth it for small encoders needs measuring. On a model the size of
-  ModernBERT-base, 4-bit saves little memory and costs speed, so `"lora"` may be the better
-  default for `EncoderModel`.
 - A state-first causal layout, which would let one state's cache be shared across its questions,
   could be added as a speed option.
 - Importing checkpoints trained by other tools needs their head, prompt format and type order.

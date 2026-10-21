@@ -83,7 +83,7 @@ This is an early version. Training covers every `tuning` mode:
 - `"lora"`, `"qlora"` and `"full"`: adapters or whole layers of the backbone train along with the
   head. These run on a laptop GPU (Apple MPS) for small datasets; a CUDA GPU is recommended for
   full-size runs. `"qlora"` needs bitsandbytes and an NVIDIA GPU and falls back to `"lora"`
-  elsewhere, with a warning. It has not yet been tested on real 4-bit hardware.
+  elsewhere, with a warning. It has trained in real 4-bit on a Colab GPU.
 
 Training stops at `epochs`, by early stopping, or at `target_loss`. A run that is interrupted
 (Ctrl-C), or saved and loaded, resumes exactly where it stopped. Calibration and `head="full"` are

@@ -75,6 +75,9 @@ def test_params_round_trip():
     params = model.get_params()
     assert params["model_name"] == "Qwen/Qwen3-0.6B" and params["num_layers"] == 0.7 and params["lora_rank"] == 16
     assert EncoderModel().get_params()["num_layers"] == "all"
+    assert EncoderModel().tuning == "full" and DecoderModel().tuning == "qlora"
+    assert repr(EncoderModel()) == "EncoderModel()"
+    assert repr(EncoderModel(tuning="lora")) == "EncoderModel(tuning='lora')"
     clone = type(model)(**params)
     assert clone.get_params() == params
     assert model.set_params(epochs=5) is model and model.epochs == 5
