@@ -11,8 +11,11 @@ be added by writing one architecture class.
 ## Install
 
 ```bash
-uv sync            # or: pip install -e .
+pip install sysone
+pip install "sysone[pandas]"   # also installs pandas, for the comparison tables of `compare`
 ```
+
+On Linux and Windows this also installs bitsandbytes, for 4-bit training (`tuning="qlora"`).
 
 ## Quickstart
 
@@ -64,24 +67,41 @@ probabilities.
 
 Example notebooks, each comparing accuracy before and after training:
 
-- [examples/quickstart.ipynb](examples/quickstart.ipynb): synthetic support tickets, a few minutes;
-- [examples/bev_dataset.ipynb](examples/bev_dataset.ipynb): bev-decision-150K, 18 domains, hard labels;
-- [examples/typed_decisions.ipynb](examples/typed_decisions.ipynb): typed-decisions, soft labels from several raters.
+- [quickstart.ipynb](https://github.com/ForwardMetric/sysone/blob/main/examples/quickstart.ipynb): synthetic support tickets, a few minutes;
+- bev-decision-150K, 18 domains, hard labels:
+  [decoder_bev_decision.ipynb](https://github.com/ForwardMetric/sysone/blob/main/examples/decoder_bev_decision.ipynb) (Qwen3) and
+  [encoder_bev_decision.ipynb](https://github.com/ForwardMetric/sysone/blob/main/examples/encoder_bev_decision.ipynb) (ModernBERT);
+- typed-decisions, soft labels from several raters:
+  [decoder_typed_decisions.ipynb](https://github.com/ForwardMetric/sysone/blob/main/examples/decoder_typed_decisions.ipynb) (Qwen3) and
+  [encoder_typed_decisions.ipynb](https://github.com/ForwardMetric/sysone/blob/main/examples/encoder_typed_decisions.ipynb) (ModernBERT).
+
+Notebooks other than the quickstart are named `<model type>_<dataset>.ipynb`.
 
 ## Status
 
-This is an early version. Training covers `tuning="head"`: the backbone is frozen, its outputs
-are computed once and cached, and only the decision head trains. LoRA, QLoRA, full fine-tuning,
-calibration and the full evaluation report are designed but not yet implemented; asking for them
-raises `NotImplementedError`. Note that the constructor's default is `tuning="qlora"`, so pass
-`tuning="head"` for now.
+This is an early version (0.2). Training covers every `tuning` mode:
 
-See [docs/DESIGN.md](docs/DESIGN.md) for the full design: every parameter, the layouts,
+- `"head"`: the backbone is frozen, its outputs are computed once and cached (in memory, and on
+  disk with `cache_dir`), and only the decision head trains;
+- `"lora"`, `"qlora"` and `"full"`: adapters or whole layers of the backbone train along with the
+  head. These run on a laptop GPU (Apple MPS) for small datasets; a CUDA GPU is recommended for
+  full-size runs. `"qlora"` needs bitsandbytes and an NVIDIA GPU and falls back to `"lora"`
+  elsewhere, with a warning. It has trained in real 4-bit on a Colab GPU.
+
+`DecoderModel` (Qwen3) defaults to `"qlora"`. `EncoderModel` (ModernBERT) defaults to `"full"`:
+adapters barely moved ModernBERT, while full tuning reached 0.79 test accuracy on typed-decisions.
+
+Training stops at `epochs`, by early stopping, or at `target_loss`. A run that is interrupted
+(Ctrl-C), or saved and loaded, resumes exactly where it stopped. Calibration and `head="full"` are
+designed but not yet implemented.
+
+See [docs/DESIGN.md](https://github.com/ForwardMetric/sysone/blob/main/docs/DESIGN.md) for the full design: every parameter, the layouts,
 architectures, heads, training and checkpoint format.
 
 ## Development
 
 ```bash
+uv sync                  # or: pip install -e . with the dev dependencies
 uv run pytest            # fast tests on tiny random-weight models, no downloads
 uv run pytest -m slow    # end-to-end tests on the real base models (~1.8 GB download)
 uv run ruff check src tests

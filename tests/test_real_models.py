@@ -16,3 +16,13 @@ def test_real_model_head_training(klass, tmp_path):
     assert set(result["answers"]) == {"color", "severity", "urgent"}
     loaded = klass.load(model.save(tmp_path / "m"), verbose=0)
     assert loaded.predict("ticket: blue minor quote", QUESTIONS) == result
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("klass", [EncoderModel, DecoderModel])
+def test_real_model_lora_training(klass, tmp_path):
+    model = klass(tuning="lora", epochs=1, batch_size=8, verbose=0).fit(make_rows(40))
+    result = model.predict("ticket: blue minor quote", QUESTIONS)
+    assert model.tuning_ == "lora" and model.plan_.n_lora > 0
+    loaded = klass.load(model.save(tmp_path / "m"), verbose=0)
+    assert loaded.predict("ticket: blue minor quote", QUESTIONS) == result

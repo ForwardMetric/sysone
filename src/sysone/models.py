@@ -6,10 +6,15 @@ from .base import SystemOneModel
 
 
 class EncoderModel(SystemOneModel):
-    """A decision model on a bidirectional encoder, ModernBERT by default."""
+    """A decision model on a bidirectional encoder, ModernBERT by default.
 
-    def __init__(self, model_name: str = "answerdotai/ModernBERT-base", *, num_layers="all", **kwargs):
-        super().__init__(model_name, num_layers=num_layers, **kwargs)
+    Trains every layer by default (`tuning="full"`): adapters barely moved ModernBERT, which was
+    pretrained only to fill in masked words, and a model this size is affordable to train fully.
+    """
+
+    def __init__(self, model_name: str = "answerdotai/ModernBERT-base", *, num_layers="all", tuning="full",
+                 **kwargs):
+        super().__init__(model_name, num_layers=num_layers, tuning=tuning, **kwargs)
 
 
 class DecoderModel(SystemOneModel):

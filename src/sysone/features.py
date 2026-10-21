@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import torch
 
-from ._util import is_out_of_memory
+from ._util import autocast, empty_device_cache, is_out_of_memory
 from .architectures.base import Architecture
 from .layout import Encoded, collate
 
@@ -52,7 +52,7 @@ def run_in_batches(items: Sequence, fn: Callable[[list], list], start: int = _ST
             if not is_out_of_memory(exc) or size == 1:
                 raise
             size = max(1, size // 2)
-            _empty_cache()
+            empty_device_cache()
             continue
         for j, out in zip(chunk, outputs):
             results[j] = out
@@ -60,22 +60,18 @@ def run_in_batches(items: Sequence, fn: Callable[[list], list], start: int = _ST
     return results
 
 
-def _empty_cache() -> None:
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    if torch.backends.mps.is_available():
-        torch.mps.empty_cache()
-
-
 @torch.no_grad()
 def extract(arch: Architecture, backbone, encoded: Sequence[Encoded], pad_id: int,
-            device: torch.device) -> list[Features]:
-    """Run the frozen backbone over `encoded` and return each example's vectors on the CPU."""
+            device: torch.device, autocast_dtype: torch.dtype | None = None) -> list[Features]:
+    """Run the backbone, without gradients, over `encoded` and return each example's vectors on
+    the CPU. `autocast_dtype` is needed when trained weights are kept in fp32 next to frozen
+    half-precision ones."""
     backbone.eval()
 
     def batch_fn(chunk: list[Encoded]) -> list[Features]:
         batch = {k: v.to(device) for k, v in collate(chunk, pad_id).items()}
-        hidden = arch.hidden_states(backbone, batch)
+        with autocast(device, autocast_dtype):
+            hidden = arch.hidden_states(backbone, batch)
         options, summary = read_vectors(hidden, batch)
         options, summary = options.to("cpu", CACHE_DTYPE), summary.to("cpu", CACHE_DTYPE)
         return [Features(options[b, : len(e.read_positions)].clone(), summary[b].clone())

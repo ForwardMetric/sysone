@@ -7,6 +7,22 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Goutham Balaraman" }]
 requires-python = ">=3.10"
+keywords = ["decision models", "classification", "fine-tuning", "lora", "qlora", "transformers",
+            "modernbert", "qwen", "calibration"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "numpy>=1.26",
     "torch>=2.4",
@@ -18,6 +34,12 @@ dependencies = [
     # elsewhere sysone falls back to tuning="lora".
     "bitsandbytes>=0.45; sys_platform == 'linux' or sys_platform == 'win32'",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ForwardMetric/sysone"
+Repository = "https://github.com/ForwardMetric/sysone"
+Issues = "https://github.com/ForwardMetric/sysone/issues"
+Design = "https://github.com/ForwardMetric/sysone/blob/main/docs/DESIGN.md"
 
 [project.optional-dependencies]
 pandas = ["pandas>=2.0"]
@@ -38,6 +60,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.version]
 path = "src/sysone/version.py"
+
+[tool.hatch.build.targets.sdist]
+include = ["src/sysone", "tests", "docs", "examples", "README.md", "LICENSE", "pyproject.toml"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sysone"]

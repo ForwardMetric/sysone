@@ -130,9 +130,11 @@ parameters are saved with the checkpoint, so `load()` rebuilds the same model. A
 `fit` is stored on an attribute with a trailing underscore: `backbone_`, `tokenizer_`, `head_`,
 `temperatures_`, `history_`, `report_`.
 
-**The defaults give real fine-tuning at low memory.** The default is QLoRA: the backbone's
+**The defaults give real fine-tuning.** For `DecoderModel` the default is QLoRA: the backbone's
 weights are frozen in 4-bit, and small adapters on its top layers learn along with the decision
-head. Most users write `DecoderModel()` or change a single setting such as `tuning="head"`. No
+head, at low memory. For `EncoderModel` it is `"full"`: every layer trains, which a model the size
+of ModernBERT-base can afford and which is what made it learn (see `tuning`). Most users write
+`DecoderModel()` or `EncoderModel()`, or change a single setting such as `tuning="head"`. No
 setting requires knowing the base model's depth, hidden size, layer names or token lengths.
 
 ```python
@@ -168,8 +170,7 @@ DecoderModel(
 
     # optimization
     optimizer="adamw",          # "adamw" | "adamw_8bit" | "sgd"
-    encoder_lr=2.5e-5,          # fully trained backbone layers
-    adapter_lr=1e-4,            # adapter weights
+    backbone_lr="auto",         # "auto" = the architecture's default for what trains; or a number
     head_lr=1e-3,
     weight_decay=0.01,
     scheduler="cosine",         # "cosine" | "linear" | "constant"
@@ -182,7 +183,9 @@ DecoderModel(
     early_stopping=True,
     validation_fraction=0.1,    # held out for early stopping, calibration and the report
     n_iter_no_change=3,         # epochs without improvement before stopping
-    target_loss=None,           # stop once validation loss reaches this value (milestone 2)
+    target_loss=None,           # stop as soon as validation loss reaches this value
+    validation_interval="auto", # optimizer steps between validation checks; "auto" = once per epoch
+                                # for tuning="head", about 10 checks per epoch otherwise
 
     # objective and data
     loss="soft-ce",             # "soft-ce" | "rlcd"
@@ -192,7 +195,9 @@ DecoderModel(
     calibrate=True,
 
     # runtime
-    cache_features="auto",      # "auto" | True | False (see Training)
+    cache_features="auto",      # "auto" | True | False: in-memory feature cache (see Training)
+    cache_dir=None,             # folder for an on-disk feature cache; None = nothing written to disk
+    cache_max_gb=5,             # size cap for cache_dir; least recently used sets are deleted first
     precision="auto",           # "auto" | "fp32" | "bf16" | "fp16"
     gradient_checkpointing="auto",
     device="auto",              # "auto" | "cuda" | "mps" | "cpu"
@@ -201,12 +206,13 @@ DecoderModel(
 )
 ```
 
-`EncoderModel` takes the same arguments. Only two defaults differ:
+`EncoderModel` takes the same arguments. Only three defaults differ:
 
 | default      | `EncoderModel`                 | `DecoderModel`     |
 |--------------|--------------------------------|--------------------|
 | `model_name` | `answerdotai/ModernBERT-base`  | `Qwen/Qwen3-0.6B`  |
 | `num_layers` | `"all"`                        | `0.7`              |
+| `tuning`     | `"full"`                       | `"qlora"`          |
 
 #### `tuning`
 
@@ -215,12 +221,22 @@ DecoderModel(
 | `tuning`             | what trains                                        | `trainable_layers` | `lora_layers` | cost                                             |
 |----------------------|----------------------------------------------------|--------------------|---------------|--------------------------------------------------|
 | `"head"`             | the head only; the backbone is frozen              | 0                  | 0             | lowest and fastest; the backbone runs once (cached); least accurate |
-| `"qlora"` (default)  | adapters on the top 60% of kept layers; frozen weights in 4-bit | 0     | 0.6           | low memory; somewhat slower than `"lora"` because weights are unpacked from 4-bit on the fly |
+| `"qlora"` (`DecoderModel` default) | adapters on the top 60% of kept layers; frozen weights in 4-bit | 0     | 0.6           | low memory; somewhat slower than `"lora"` because weights are unpacked from 4-bit on the fly |
 | `"lora"`             | adapters on the top 60% of kept layers             | 0                  | 0.6           | more memory than `"qlora"`, faster per step      |
-| `"full"`             | every kept layer                                   | `"all"`            | 0             | highest                                          |
+| `"full"` (`EncoderModel` default) | every kept layer                      | `"all"`            | 0             | highest                                          |
 
-`"qlora"` is the default because it trains the backbone, not only the head, while keeping memory
-close to head-only. `"head"` is the choice when speed matters more than accuracy.
+`"qlora"` is `DecoderModel`'s default because it trains the backbone, not only the head, while
+keeping memory close to head-only. `EncoderModel` defaults to `"full"`, because adapters barely
+moved ModernBERT: on typed-decisions, LoRA on ModernBERT-base stayed near the average-answer
+baseline (0.53 test accuracy), while full tuning reached 0.79. ModernBERT was pretrained only to
+fill in masked words, and turning its `[CLS]` and `[MASK]` vectors into a decision means reshaping
+the whole network, which a few small adapters can't do. `"head"` is the choice when speed matters
+more than accuracy.
+
+Training the backbone costs roughly three forward passes per example per epoch, and no features
+can be cached because the backbone's outputs change every step. On a laptop GPU (Apple MPS) this
+is slow for large datasets; a CUDA GPU is recommended for full-size runs with `"qlora"`, `"lora"`
+or `"full"`.
 
 **Fallback.** 4-bit loading needs bitsandbytes and a supported device, which in practice means an
 NVIDIA GPU. Where that isn't available, for example on Apple Silicon or CPU, the default
@@ -271,9 +287,16 @@ model of any depth.
   `choice` questions. Score levels and noul options have a meaningful order and are never
   shuffled.
 
-Learning rates and the other optimizer settings stay fixed defaults. They come from experiments,
-and scaling them automatically would be guesswork that fails silently. A head learning rate of
-`1e-3` has diverged with batches of about 16; lower it if `batch_size` is set that small.
+Learning rates and the other optimizer settings are fixed defaults that come from experiments;
+nothing scales them with the data, which would be guesswork that fails silently. There are two:
+- **`head_lr`** for the decision head, which starts from random weights and needs a rate well
+  above the backbone's. A head learning rate of `1e-3` has diverged with batches of about 16;
+  lower it if `batch_size` is set that small.
+- **`backbone_lr`** for whatever trains in the backbone. With `"auto"` it comes from the
+  architecture, which keeps one rate for fully trained layers and embeddings and one for adapters
+  (see the table below): pretrained models differ in how far a step should move them, and adapters
+  start at zero and need a larger rate than full weights. In a mixed setup each group gets its own
+  default. A number sets the rate for both groups.
 
 #### Validation
 
@@ -282,9 +305,16 @@ and scaling them automatically would be guesswork that fails silently. A head le
   `"qlora"`.
 - `tuning="qlora"` with `trainable_layers > 0` is rejected, because a quantized layer can't be
   fully fine-tuned.
+- `tuning="head"` with `trainable_layers > 0` or `train_embeddings` is rejected; it trains only the
+  head.
+- `cache_features=True` with a backbone that learns is rejected.
 - `trainable_layers + lora_layers` larger than the kept layers is rejected.
 - Adapter settings (`lora_rank`, `quant_bits`, ...) changed from their defaults outside
   `"lora"` / `"qlora"` give a warning that they are ignored.
+- `cache_dir` with a backbone that learns gives a warning that it is ignored: features can only
+  be cached when the backbone is frozen.
+- `target_loss` must be a positive number or None; `validation_interval` must be `"auto"` or a
+  positive integer; `cache_max_gb` must be positive.
 
 #### Same meaning on every architecture
 
@@ -312,6 +342,12 @@ How the first two architectures translate each model-dependent parameter:
 | `max_len=None`              | `max_position_embeddings`                              | `max_position_embeddings`                       |
 | `head_dim="auto"`           | half of `hidden_size`                                  | half of `hidden_size`                           |
 | `tuning="qlora"`            | 4-bit on every `nn.Linear` in the kept layers          | same                                            |
+| `backbone_lr="auto"`, full  | `5e-5` (measured)                                      | `2.5e-5` (not yet measured)                     |
+| `backbone_lr="auto"`, adapters | `1e-3` (not yet measured; `1e-4` learned too slowly) | `1e-4` (measured)                              |
+
+The measured values come from typed-decisions runs on a CUDA GPU: fully tuned ModernBERT-base at
+`5e-5` reached 0.79 test accuracy, and Qwen3-0.6B adapters at `1e-4` reached 0.65. The others are
+starting points until they are measured.
 
 ModernBERT uses the name `Wo` in both its attention and its MLP blocks. Adapter targets are
 therefore matched by module path (`attn.Wo` vs `mlp.Wo`), never by bare module name.
@@ -479,14 +515,41 @@ Before training, a validation slice is split off: `validation_fraction` of the d
 by category. It is used for early stopping, for calibration and for the report, and is never
 trained on.
 
-- AdamW with separate learning rates for fully trained backbone layers, adapter weights and the
-  head.
+- AdamW with separate learning rates for the head, adapter weights, and fully trained layers and
+  embeddings (`head_lr`, and `backbone_lr` as above).
 - Cosine or linear schedule with warmup, gradient accumulation and gradient clipping.
 - Examples of similar length are batched together, so little compute is spent on padding.
 - Option shuffling as set by `shuffle_options`, with the target permuted to match.
 - `balance` resamples examples by category or question.
-- With `early_stopping`, validation loss is checked after each epoch. Training stops after
-  `n_iter_no_change` epochs without improvement, and the best epoch's weights are kept.
+- `batch_size` is the number of examples per optimizer update. The library picks how many go
+  through the model at once to fit the device's memory, halves that if memory runs out (in the
+  forward or the backward pass), and accumulates gradients up to `batch_size`. With a frozen
+  backbone the whole batch goes through the head at once; when the backbone learns, it starts at
+  16 examples per forward pass. Within an update, examples are sorted by length before they are
+  split into forward passes.
+
+**Stopping.** Training ends at whichever comes first:
+- `epochs` have run (the upper bound);
+- with `early_stopping`, `n_iter_no_change` epochs without a lower validation loss. Patience is
+  counted in epochs however often validation runs: training stops at the first check that comes
+  `n_iter_no_change` epochs after the best one;
+- with `target_loss`, the validation loss reaches `target_loss`.
+
+Validation runs every `validation_interval` optimizer steps. `"auto"` means once per epoch for
+`tuning="head"`, where epochs take seconds, and about ten times per epoch when the backbone
+learns, where one epoch can take many minutes, so stopping isn't delayed by a whole epoch. When
+training stops, the weights from the best validation check are restored. Without a validation
+slice, early stopping is off and `target_loss` applies to the running training loss instead; the
+log says so. A check also runs after the last step.
+
+Each check adds a record to `history_`: the step, the epoch as a fraction (`1.4` is 40% into the
+second epoch), the mean training loss since the previous check, and the validation loss and
+accuracy.
+
+**Interrupting.** Stopping `fit` with Ctrl-C ends training the same way: the best weights so far
+are restored, the training state is kept, and the `KeyboardInterrupt` is raised again. The model
+can then be used or saved, and a later `fit` resumes from the last completed step (see
+[Checkpoints](#checkpoints)).
 
 **Frozen backbone (`tuning="head"`).** Nothing in the backbone learns, so:
 - the backbone runs without gradients and in eval mode (no dropout);
@@ -501,9 +564,46 @@ The `full` head needs every token's vector, which is too large to cache. If the 
 fit in memory, the backbone is run again each epoch instead.
 
 **Backbone that learns (`"lora"`, `"qlora"`, `"full"`).**
-- The backbone's weights are loaded in fp32 and run under bf16 autocast where supported. Adapter
-  weights and fully trained layers keep fp32 copies for the optimizer.
-- Gradient checkpointing is turned on for long sequences.
+- Weights being trained (adapters, fully trained layers, embeddings) are kept in fp32 for the
+  optimizer. The forward pass runs under bf16 autocast where supported. With `"qlora"` the frozen
+  weights are stored in 4-bit; with `"lora"` and `"full"` they are loaded in bf16 where supported,
+  since they are never updated.
+- Gradient checkpointing (`"auto"`) turns on when sequences are long enough that activations,
+  not weights, dominate memory: when the estimated activations of one forward pass (about
+  `34·s·h + 5·a·s²` bytes per example and layer, at the 95th-percentile length, for the layers
+  gradients flow through) exceed the backbone's weights.
+- When training ends, fully trained layers and embeddings are rounded to the backbone's precision,
+  the precision they are saved in, so the model predicts the same before and after `save` /
+  `load`. The fp32 values stay in the training state.
+- No feature cache: the backbone's outputs change after every step.
+
+#### Feature cache on disk
+
+With `cache_dir` set and `tuning="head"`, the cached option and summary vectors are also written
+to disk, so a second `fit`, or `fit` on a reloaded model, skips the backbone pass. That pass is
+most of the cost of head-only training. Nothing is written to disk unless `cache_dir` is given,
+and there is no default location.
+
+- **What is stored:** one vector per option and one summary vector per question, in bf16. For a
+  model with hidden size 1024 that is about 10 KB per question: about 60 MB for 6,000 questions,
+  about 2.5 GB for 250,000.
+- **Cache sets:** vectors are grouped into sets keyed by everything that determines them: the
+  base model and its revision, `num_layers`, layout, precision, prompt format and token limits.
+  Within a set, each question is looked up by a hash of its encoded tokens. If the data grows,
+  only the new questions are computed and added to the same set. If any key part changes, a new
+  set is started.
+- **Size cap:** `cache_max_gb` (default 5) bounds the whole folder. When writing would exceed it,
+  the least recently used sets are deleted first. A single set larger than the cap is never
+  written; the log says so and training continues without the disk cache.
+- **Free-space guard:** before writing, sysone checks the disk and skips caching if the write
+  would leave less than 10% of the disk free, with a log line.
+- **Visibility:** `fit` logs the cache folder, the size written and the folder's total.
+  `sysone.cache_info(cache_dir)` lists the sets with their sizes and last use, and
+  `sysone.clear_cache(cache_dir)` deletes them.
+
+The base model itself is not part of this cache. It is downloaded once into the Hugging Face cache
+(`~/.cache/huggingface` by default; about 1.2 GB for Qwen3-0.6B and 600 MB for ModernBERT-base)
+and never copied by sysone.
 
 Losses:
 - `soft-ce` (default): cross-entropy against the target distribution, over each row's own
@@ -563,15 +663,52 @@ Baselines:
 
 ### Checkpoints
 
-`save(path)` writes a self-contained folder:
+`save(path, training_state="auto")` writes a self-contained folder:
 - `config.json`: every constructor parameter, the architecture name, the base model's name and
-  revision, the prompt format, the type names and the fitted temperatures;
+  revision, the prompt format, the type names, the fitted token limits, the fitted temperatures,
+  the training history and the last report;
 - `head.safetensors`;
-- `adapter/` when adapters were trained;
-- the weights of any fully trained backbone layers or embeddings.
+- `adapter/`, in peft's format, when adapters were trained;
+- `backbone.safetensors` with only the fully trained layers and embeddings, when any were trained,
+  stored in the backbone's precision (bf16 where supported);
+- `training_state/`, when included: the optimizer state, the step reached (which places the
+  schedule and the epoch), the best validation loss and the early-stopping counter, the random
+  generator states, and fp32 copies of every trained weight (head, adapters, fully trained layers)
+  as they were after the last step. The model's own weights are those of the best check, so both
+  are needed to continue the run.
 
-Frozen backbone weights are not saved. `load(path)` downloads the base model by name and
-revision, then applies the saved weights on top, so a LoRA checkpoint is a few megabytes.
+Frozen backbone weights are never saved. `load(path)` downloads the base model by name and
+revision, then applies the saved weights on top, so a head-only checkpoint is a few hundred KB and
+a LoRA checkpoint a few MB.
+
+**Training state.** The optimizer keeps two extra values per trained weight, and the state adds an
+fp32 copy of each. That is tiny for the head and adapters but can reach several GB with
+`tuning="full"`. `training_state` controls it:
+- `"auto"` (default): included when it is under 100 MB, otherwise left out with a log line saying
+  how to include it;
+- `True`: always included;
+- `False`: never included.
+
+**Continuing training.** `fit` on a fitted or loaded model continues training:
+- with a saved training state, it resumes the same run: the same optimizer moments, the schedule
+  at the step it reached, and the same validation slice and early-stopping counters, as if the run
+  had not stopped. `epochs` counts the total, so a run saved at epoch 12 of 20 trains 8 more.
+  This needs the same training data and the same run settings (batch size, learning rates,
+  optimizer, schedule, validation slice and interval, seed, balancing, option shuffling, label
+  smoothing); the saved state records a fingerprint of them, and if any differ, `fit`
+  warm-starts instead and says so in the log. Stopping settings (`epochs`, `early_stopping`,
+  `n_iter_no_change`, `target_loss`) may change. A run that already trained all its `epochs` trains
+  nothing more until `epochs` is raised;
+- without one, it warm-starts: the trained weights are kept, and a new optimizer and schedule
+  start from zero for `epochs` more epochs.
+
+Because `training_state="auto"` may or may not have saved the state, `fit` always logs which case
+applies when it starts, e.g. `resuming at epoch 12 of 20` or
+`warm start (no saved training state): training 20 epochs`; a fresh model logs
+`training from scratch: up to 20 epochs`.
+
+Either way, a structural parameter changed since the last fit (base model, layers, layout, head
+shape, token limits, tuning mode) starts over instead, as before.
 
 ## Repository layout
 
@@ -590,13 +727,14 @@ src/sysone/
     qwen.py
   layout.py            # parallel and sequential position ids, option ids, masks
   heads.py             # compact and full decision heads
-  tuning.py            # truncate, freeze, LoRA / QLoRA by layer index (peft, bitsandbytes)
+  tuning.py            # layer plans, freezing, LoRA / QLoRA by layer index (peft, bitsandbytes)
   losses.py            # soft_ce, rlcd
   calibration.py       # temperature fitting
-  training.py          # training loop, validation split, balancing, early stopping
+  training.py          # training loop, validation split, balancing, stopping, resumable state
   features.py          # cached option and summary vectors for a frozen backbone
+  cache.py             # the on-disk feature cache: sets, size cap, cache_info, clear_cache
   evaluation.py        # evaluate reports, baselines, compare
-  checkpoint.py        # save / load
+  checkpoint.py        # adapter, trained-layer and training-state files of a saved model
 tests/                 # combination matrix per architecture (tiny random configs),
                        # option-order invariance, layout goldens, data input forms, answer schema
 examples/              # notebooks: quickstart, public datasets with hard and soft labels
@@ -614,26 +752,61 @@ applies.
 - Long-document windowing: scanning a state longer than `max_state_tokens` in overlapping windows.
 - Abstention thresholds and confidence binning on top of temperatures.
 
-## Planned for milestone 2
+## Milestones
 
-Alongside `tuning="lora"`, `"qlora"` and `"full"`:
-- **Stopping at a target loss.** `target_loss` ends training as soon as validation loss reaches
-  that value, in addition to `epochs` (the upper bound) and early stopping. Without a validation
-  slice it applies to the training loss and says so in the log.
-- **Feature cache on disk.** A `cache_dir` setting keeps the frozen backbone's option and summary
-  vectors between runs, keyed by the base model and revision, `num_layers`, layout, prompt format,
-  token limits and the encoded text. A second `fit`, or `fit` on a reloaded model, then skips the
-  backbone pass, which is most of the cost of head-only training.
-- **Resuming exactly.** Saving the optimizer and schedule state with the model, so a later `fit`
-  continues the same run instead of warm-starting from the trained weights with a fresh optimizer.
+### Milestone 1: head-only training (done)
+
+`tuning="head"` on ModernBERT and Qwen3, end to end: data input forms, prompt formats, layouts,
+the two architectures, the compact head, the in-memory feature cache, `fit` / `predict` /
+`save` / `load`, `evaluate` / `baselines` / `compare`, and three example notebooks.
+
+### Milestone 2: training the backbone
+
+**Goal:** let the backbone learn, not only the head, and make long runs manageable: stopping
+when good enough, resuming where a run left off, and not repeating the backbone pass for
+head-only training.
+
+**In scope:**
+1. `tuning="lora"`, `"qlora"` and `"full"`, including mixed setups (fully trained top layers with
+   adapters below), `lora_targets` translated per architecture, `train_embeddings`, and the
+   `"qlora"` to `"lora"` fallback where 4-bit loading is unavailable.
+2. Training through the backbone: separate learning rates, automatic per-step batch size with
+   out-of-memory halving and gradient accumulation, fp32 trained weights under bf16 autocast,
+   gradient checkpointing, and option shuffling for the sequential layout.
+3. Stopping: `target_loss` and `validation_interval`, alongside `epochs` and early stopping.
+4. The on-disk feature cache for `tuning="head"`: `cache_dir`, `cache_max_gb`, the free-space
+   guard, `cache_info` and `clear_cache`.
+5. Checkpoints for trained backbones (adapters, fully trained layers) and the training state for
+   exact resume, with `training_state="auto"`.
+6. Tests: the combination matrix of architecture × `tuning` × `layout` on tiny random-weight
+   models. Each combination must build, take a training step, save and load with identical
+   outputs, and stay option-order invariant under the parallel layout. Resume must reproduce an
+   uninterrupted run's weights. The disk cache must respect its cap and invalidate on any key
+   change. 4-bit cases run only where bitsandbytes is available; the fallback is always tested.
+7. Measurement: a LoRA section in the bev-decision-150K and typed-decisions notebooks, compared
+   with head-only training on the same data. The LoRA sections default to smaller sizes so they
+   finish on a laptop, with a note that a CUDA GPU is recommended for full-size runs.
+
+**Done when:** all of the above is in, the tests pass, and the notebooks show the backbone-tuning
+results next to head-only: LoRA and QLoRA for the decoder, full tuning for the encoder (adapters
+barely moved ModernBERT; see `tuning`).
+
+**Deferred to later milestones:** `head="full"`, `loss="rlcd"`, an ordinal-aware loss for score
+questions (best measured once backbone training is in, so the two effects aren't mixed), and
+calibration.
+
+### Milestone 3: calibration and reporting
+
+Temperature fitting per question type and option-count bucket, expected calibration error in
+reports, and `answer_confidence` that means what it says.
 
 ## Open items
 
+- `"qlora"` has trained and evaluated in real 4-bit on a Colab NVIDIA GPU (Qwen3-0.6B on
+  typed-decisions). Saving and reloading a 4-bit model has only been tested through the fallback;
+  it still needs a run on an NVIDIA GPU.
 - Whether bitsandbytes supports 4-bit training on Apple Silicon yet needs checking. If it does,
   the fallback there can be dropped.
-- Whether QLoRA is worth it for small encoders needs measuring. On a model the size of
-  ModernBERT-base, 4-bit saves little memory and costs speed, so `"lora"` may be the better
-  default for `EncoderModel`.
 - A state-first causal layout, which would let one state's cache be shared across its questions,
   could be added as a speed option.
 - Importing checkpoints trained by other tools needs their head, prompt format and type order.

@@ -26,6 +26,8 @@ class QwenArchitecture(Architecture):
         "attention": [r"self_attn\.(q|k|v|o)_proj"],
         "mlp": [r"mlp\.(gate|up|down)_proj"],
     }
+    # Adapters at 1e-4 measured on typed-decisions; the full-tuning rate is not yet measured.
+    learning_rates = {"full": 2.5e-5, "adapter": 1e-4}
 
     def pieces(self, tokenizer, head, state, options) -> Pieces:
         gap, newline, open_, close, cue = _delimiters(tokenizer)

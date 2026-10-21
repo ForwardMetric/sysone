@@ -75,6 +75,9 @@ def test_params_round_trip():
     params = model.get_params()
     assert params["model_name"] == "Qwen/Qwen3-0.6B" and params["num_layers"] == 0.7 and params["lora_rank"] == 16
     assert EncoderModel().get_params()["num_layers"] == "all"
+    assert EncoderModel().tuning == "full" and DecoderModel().tuning == "qlora"
+    assert repr(EncoderModel()) == "EncoderModel()"
+    assert repr(EncoderModel(tuning="lora")) == "EncoderModel(tuning='lora')"
     clone = type(model)(**params)
     assert clone.get_params() == params
     assert model.set_params(epochs=5) is model and model.epochs == 5
@@ -85,7 +88,12 @@ def test_params_round_trip():
 
 
 @pytest.mark.parametrize("params, error, message", [
-    (dict(tuning="lora"), NotImplementedError, "not implemented yet"),
+    (dict(tuning="head", trainable_layers=2), ValueError, "trains only the head"),
+    (dict(tuning="lora", cache_features=True), ValueError, "backbone is frozen"),
+    (dict(tuning="lora", lora_targets="everything"), ValueError, "lora_targets"),
+    (dict(tuning="head", target_loss=-1), ValueError, "target_loss"),
+    (dict(tuning="head", validation_interval=0), ValueError, "validation_interval"),
+    (dict(tuning="head", cache_max_gb=0), ValueError, "cache_max_gb"),
     (dict(tuning="head", lora_layers=4), ValueError, "needs tuning='lora'"),
     (dict(tuning="qlora", trainable_layers=2), ValueError, "quantized"),
     (dict(tuning="head", layout="diagonal"), ValueError, "layout must be one of"),
