@@ -102,15 +102,214 @@ _RUN_PARAMS = ("batch_size", "validation_fraction", "validation_interval", "seed
 
 
 class NotFittedError(RuntimeError):
-    """Raised when predicting with a model that has neither been fit nor loaded."""
+    """Raised when a model that has neither been fit nor loaded is asked to predict, evaluate or save.
+
+    Its decision head is untrained, so its answers would be noise.
+    """
 
 
 class SystemOneModel:
     """Fine-tune and calibrate a system-one decision model.
 
-    Every hyperparameter is a keyword argument; `__init__` only stores them, so `get_params`,
-    `set_params` and `clone`-style copying work. Anything learned in `fit` is stored on an
-    attribute with a trailing underscore. See `docs/DESIGN.md` for every parameter.
+    Use :class:`~sysone.EncoderModel` (ModernBERT) or :class:`~sysone.DecoderModel` (Qwen3); this
+    is their shared base class. Both take every parameter below and differ only in the defaults of
+    ``model_name``, ``num_layers`` and ``tuning``.
+
+    As in scikit-learn, ``__init__`` only stores the parameters, so :meth:`get_params` and
+    :meth:`set_params` work and a configuration round-trips through JSON. Everything learned in
+    :meth:`fit` is stored on an attribute with a trailing underscore. Most users change at most
+    one or two parameters: the defaults give real fine-tuning, and every value that depends on
+    the base model or the data is worked out automatically.
+
+    Layer counts follow scikit-learn's convention for ``max_features``: an ``int`` is a count, a
+    ``float`` in (0, 1] is a fraction, and ``"all"`` means every layer.
+
+    Parameters
+    ----------
+    model_name : str
+        Hugging Face Hub id or local path of the base model. ``EncoderModel`` defaults to
+        ``"answerdotai/ModernBERT-base"``, ``DecoderModel`` to ``"Qwen/Qwen3-0.6B"``.
+    architecture : Architecture or None, default=None
+        How to drive the base model. None looks it up from the model's ``model_type``; pass an
+        :class:`~sysone.Architecture` instance to use a base model sysone doesn't support yet.
+    revision : str or None, default=None
+        Git revision (branch, tag or commit) of the base model on the Hub. None uses the latest;
+        the revision actually used is saved with the model.
+    tuning : {"head", "qlora", "lora", "full"}
+        How much of the backbone learns, from least to most memory:
+
+        - ``"head"``: only the decision head trains. The backbone runs once and its outputs are
+          cached, so training is fast; it is the least accurate.
+        - ``"qlora"``: small adapters on the top 60% of kept layers train, with the frozen
+          weights in 4-bit. Needs bitsandbytes and an NVIDIA GPU; elsewhere it trains as
+          ``"lora"`` with a warning. ``DecoderModel``'s default.
+        - ``"lora"``: the same adapters, with the frozen weights in half precision.
+        - ``"full"``: every kept layer trains. ``EncoderModel``'s default.
+    num_layers : int, float or "all"
+        Layers of the base model to keep; higher layers are never loaded. A fraction is of the
+        model's full depth. ``EncoderModel`` keeps ``"all"``, ``DecoderModel`` keeps ``0.7``.
+    trainable_layers : int, float, "all" or None, default=None
+        Top layers to train fully, overriding what ``tuning`` sets. A fraction is of the kept
+        layers. Only valid with ``tuning="lora"`` or ``"full"``.
+    lora_layers : int, float, "all" or None, default=None
+        Layers that get adapters, directly below the fully trained ones, overriding what
+        ``tuning`` sets (0.6 for ``"lora"`` and ``"qlora"``). Only valid with adapters.
+    train_embeddings : bool, default=False
+        Also train the token embeddings. Not valid with ``tuning="head"``.
+    layout : {"parallel", "sequential"}, default="parallel"
+        How a question's options are placed in the sequence. ``"parallel"`` gives every option
+        the same positions and keeps options from attending to each other, so answers don't
+        depend on option order. ``"sequential"`` lists options one after another.
+    max_state_tokens : int or "auto", default="auto"
+        Token budget for the state text; longer states are truncated. ``"auto"`` uses the 95th
+        percentile of the training data, capped at the model's limit. The value used is saved.
+    max_option_tokens : int or "auto", default="auto"
+        Token budget for each option, worked out like ``max_state_tokens``.
+    max_len : int or None, default=None
+        Cap on the whole sequence length. None uses the base model's own limit.
+    lora_rank : int, default=8
+        Rank of the LoRA adapters.
+    lora_alpha : int or None, default=None
+        LoRA scaling factor. None means ``2 * lora_rank``.
+    lora_dropout : float, default=0.0
+        Dropout on the adapters' input.
+    lora_targets : {"attention", "mlp", "all"} or list of str, default="attention"
+        Which projections in each adapted layer get adapters: a named group, translated by the
+        architecture, or a list of module names such as ``["q_proj", "v_proj"]``.
+    quant_bits : {4, 8}, default=4
+        ``tuning="qlora"`` only: bits for the frozen weights.
+    quant_type : {"nf4", "fp4"}, default="nf4"
+        ``tuning="qlora"`` with 4 bits only: the 4-bit number format.
+    head : {"compact", "full"}, default="compact"
+        The decision head. ``"compact"`` reads one vector per option and a summary vector.
+        ``"full"`` is designed but not implemented yet.
+    head_layers : int, default=2
+        Layers in the decision head.
+    head_dim : int or "auto", default="auto"
+        Hidden size of the decision head. ``"auto"`` is half the backbone's hidden size.
+    head_dropout : float, default=0.0
+        Dropout inside the decision head.
+    optimizer : {"adamw", "adamw_8bit", "sgd"}, default="adamw"
+        The optimizer. ``"adamw_8bit"`` needs bitsandbytes.
+    backbone_lr : float or "auto", default="auto"
+        Learning rate for whatever trains in the backbone. ``"auto"`` uses the architecture's
+        measured defaults, one for fully trained layers and one for adapters; a number sets both.
+    head_lr : float, default=1e-3
+        Learning rate for the decision head. Lower it if ``batch_size`` is set to about 16 or less.
+    weight_decay : float, default=0.01
+        Weight decay for the optimizer.
+    scheduler : {"cosine", "linear", "constant"}, default="cosine"
+        Learning-rate schedule after warmup.
+    warmup_ratio : float, default=0.05
+        Fraction of the training steps spent warming up the learning rate.
+    grad_clip : float, default=1.0
+        Maximum gradient norm.
+    batch_size : int, default=64
+        Examples per optimizer update. How many go through the model at once is picked to fit
+        the device's memory, and gradients are accumulated up to ``batch_size``.
+    epochs : int, default=20
+        Upper bound on training epochs; early stopping usually ends training sooner. On a
+        second ``fit`` that resumes a run, ``epochs`` counts the total.
+    early_stopping : bool, default=True
+        Stop after ``n_iter_no_change`` epochs without a lower validation loss, and restore the
+        best weights.
+    validation_fraction : float, default=0.1
+        Fraction of the data held out, stratified by category, for early stopping, calibration
+        and :attr:`report_`. It is never trained on.
+    n_iter_no_change : int, default=3
+        Patience for early stopping, in epochs, however often validation runs.
+    target_loss : float or None, default=None
+        Stop as soon as the validation loss reaches this value.
+    validation_interval : int or "auto", default="auto"
+        Optimizer steps between validation checks. ``"auto"`` checks once per epoch with
+        ``tuning="head"`` and about ten times per epoch when the backbone learns.
+    loss : {"soft-ce"}, default="soft-ce"
+        Training objective: cross-entropy against the (possibly soft) target distribution.
+    ordinal_weight : float, default=1.0
+        Weight of the ranked probability score added to the loss of score questions, so
+        predicting a level next to the right one costs less than one far away. 0 turns it off.
+    label_smoothing : float, default=0.0
+        Moves this much of each hard label's mass evenly onto the other options.
+    shuffle_options : "auto", None or list of str, default="auto"
+        Question types whose options are shuffled during training. ``"auto"`` shuffles
+        ``choice`` questions with the sequential layout and nothing with the parallel layout,
+        which is already order-invariant. Score levels and yes/no options are never shuffled.
+    balance : {None, "category", "question"}, default=None
+        Resample training examples so every category, or every question, counts evenly.
+    calibrate : bool, default=True
+        Fit temperatures on the validation slice after training, so the reported probabilities
+        match how often answers are right. Never changes the top answer.
+    cache_features : bool or "auto", default="auto"
+        With ``tuning="head"``, compute the backbone's outputs once and keep them in memory.
+        ``"auto"`` does so when they fit; ``True`` is rejected when the backbone learns.
+    cache_dir : str, path or None, default=None
+        Folder for an on-disk feature cache, so a later ``fit`` with ``tuning="head"`` skips the
+        backbone pass. None writes nothing to disk. See :func:`~sysone.cache_info`.
+    cache_max_gb : float, default=5
+        Size cap for ``cache_dir``; the least recently used cache sets are deleted first.
+    precision : {"auto", "fp32", "bf16", "fp16"}, default="auto"
+        Precision of the frozen backbone weights and the forward pass. ``"auto"`` uses bf16 where
+        the device supports it natively, fp16 on older CUDA GPUs such as the T4 (with loss
+        scaling), and fp32 on the CPU.
+    gradient_checkpointing : bool or "auto", default="auto"
+        Recompute activations in the backward pass to save memory. ``"auto"`` turns it on when
+        sequences are long enough that activations would take more memory than the weights.
+    checkpoint_dir : str, path or None, default=None
+        Folder that ``fit`` saves the model to when training ends or is interrupted, with a
+        ``run.json`` describing how to resume. None writes nothing.
+    checkpoint_every : int or None, default=None
+        Also save to ``checkpoint_dir`` every this many optimizer steps.
+    device : {"auto", "cuda", "mps", "cpu"} or str, default="auto"
+        Where to run. ``"auto"`` picks CUDA, then Apple MPS, then the CPU.
+    seed : int, default=0
+        Seed for the validation split, sampling, initialisation and dropout.
+    verbose : int, default=1
+        0 prints nothing; 1 prints progress: loading, validation checks and stopping.
+
+    Attributes
+    ----------
+    is_fitted : bool
+        Whether the model has been fit or loaded and can predict.
+    backbone_ : torch.nn.Module
+        The base model, with only the kept layers, any adapters and trained weights.
+    tokenizer_ : transformers.PreTrainedTokenizerBase
+        The base model's tokenizer.
+    head_ : torch.nn.Module
+        The trained decision head.
+    temperatures_ : dict of str to float
+        Calibration temperature per question type (``"choice"``, ``"score"``, ``"noul"``); 1.0
+        where there was too little validation data.
+    temperatures_by_options_ : dict
+        Calibration temperatures per question type and option-count bucket, where the
+        validation slice had at least 50 questions of that kind.
+    history_ : list of dict
+        One record per validation check: ``step``, ``epoch`` (a fraction: 1.4 is 40% into the
+        second epoch), ``train_loss``, and ``val_loss`` and ``val_accuracy`` when there is a
+        validation slice.
+    report_ : dict
+        Summary of the last ``fit``: ``n_train``, ``n_validation``, ``skipped`` (rows or
+        questions that couldn't be used, with counts), ``validation`` (loss and accuracy on the
+        validation slice) and ``calibration`` (the fitted temperatures and the validation
+        expected calibration error before and after).
+    training_state_ : object or None
+        What a later ``fit`` needs to resume the last run exactly: optimizer state, schedule
+        position, last weights and random states.
+    tuning_ : str
+        The tuning mode actually used; ``"lora"`` when ``"qlora"`` fell back.
+    device_ : torch.device
+        The device the model runs on.
+    dtype_ : torch.dtype
+        The precision of the frozen backbone weights.
+    max_state_tokens_ : int
+        The state token budget used, measured from the training data when ``"auto"``.
+    max_option_tokens_ : int
+        The per-option token budget used.
+
+    See Also
+    --------
+    EncoderModel : The model class for bidirectional encoders such as ModernBERT.
+    DecoderModel : The model class for causal decoders such as Qwen3.
+    baselines : Simple guessers to compare a model against.
     """
 
     def __init__(
@@ -248,9 +447,42 @@ class SystemOneModel:
         return defaults
 
     def get_params(self, deep: bool = True) -> dict[str, Any]:
+        """Get the model's parameters, as scikit-learn's ``get_params``.
+
+        Parameters
+        ----------
+        deep : bool, default=True
+            Accepted for scikit-learn compatibility; no parameter holds another estimator.
+
+        Returns
+        -------
+        dict
+            Every constructor parameter and its current value.
+        """
         return {name: getattr(self, name) for name in self._param_defaults()}
 
     def set_params(self, **params) -> SystemOneModel:
+        """Set parameters, as scikit-learn's ``set_params``.
+
+        Changing a structural parameter (the base model, layers, layout, head shape, token
+        limits, tuning mode, adapter settings) makes the next :meth:`fit` start over instead of
+        continuing training.
+
+        Parameters
+        ----------
+        **params
+            Constructor parameters and their new values.
+
+        Returns
+        -------
+        self
+            The model, so calls can be chained: ``model.set_params(epochs=4).fit(rows)``.
+
+        Raises
+        ------
+        ValueError
+            If a name is not a parameter of this model.
+        """
         valid = self._param_defaults()
         for name, value in params.items():
             if name not in valid:
@@ -378,6 +610,7 @@ class SystemOneModel:
 
     @property
     def is_fitted(self) -> bool:
+        """Whether the model has been fit or loaded and can predict."""
         return getattr(self, "head_", None) is not None
 
     def _structure(self) -> dict:
@@ -521,16 +754,64 @@ class SystemOneModel:
     # -- fit -----------------------------------------------------------------------------------
 
     def fit(self, data, questions: Mapping | None = None) -> SystemOneModel:
-        """Train on labelled rows. See `sysone.data` for the accepted input forms.
+        """Train the model on labelled data.
 
-        Calling `fit` again continues training the same model, unless a structural parameter
-        (the base model, layers, layout, head shape, token limits, tuning mode, ...) changed, in
-        which case it starts over. With a training state from the last run (kept in memory, or
-        saved with the model) and the same data and run settings, it resumes that run exactly;
-        `epochs` counts the total. Otherwise it warm-starts: the trained weights are kept and a new
-        optimizer and schedule train `epochs` more epochs.
+        A slice of the data (``validation_fraction``) is held out for early stopping,
+        calibration and :attr:`report_`; the rest trains the model. After training, the weights
+        from the best validation check are kept and, with ``calibrate=True``, temperatures are
+        fitted so the probabilities match how often answers are right.
 
-        Interrupting `fit` (Ctrl-C) keeps the best weights so far and the state to resume from.
+        Calling ``fit`` again continues training the same model, unless a structural parameter
+        (the base model, layers, layout, head shape, token limits, tuning mode, adapter
+        settings) changed, in which case it starts over. With the training state of the last run
+        (kept in memory, or saved with the model) and the same data and run settings, it resumes
+        that run exactly, and ``epochs`` counts the total. Otherwise it warm-starts: the trained
+        weights are kept, and a new optimizer and schedule train ``epochs`` more epochs.
+
+        Interrupting ``fit`` (Ctrl-C) keeps the best weights so far and the state to resume
+        from, then raises the ``KeyboardInterrupt`` again.
+
+        Parameters
+        ----------
+        data : list of dict, DataFrame, datasets.Dataset, str or path
+            Labelled training data, in any of these forms:
+
+            - **records**: dicts with a ``state`` (text, a dict, or a list of conversation
+              turns), ``questions`` (``{id: question}``), the labels, and optionally a
+              ``category``. Rows may mix different question sets.
+            - **records plus a question catalog**: rows carry only ``state``, labels and
+              ``category``; the questions are passed once as ``questions``.
+            - **a long DataFrame**, one row per state and question: columns ``state``,
+              ``question_id``, ``answer`` (with ``questions``), or ``state``, ``type``,
+              ``instructions``, ``criteria``, ``answer``.
+            - **a file**: ``.jsonl``, ``.json``, ``.csv`` or ``.parquet`` holding any of the
+              above.
+
+            Labels go in ``expected`` on the row (``{id: label}``), in a ``label`` inside a
+            question, or as soft labels in ``gold`` (``{id: {"probabilities": {...}}}``). A hard
+            label is a choice label, a bool for yes/no, or a level index for a score; a
+            fractional score such as 2.5 splits between levels 2 and 3.
+        questions : dict or None, default=None
+            A question catalog, ``{id: question}``, for rows that name questions by id.
+
+        Returns
+        -------
+        self
+            The fitted model.
+
+        Raises
+        ------
+        ValueError
+            If a parameter has an unsupported value or combination (checked before any weights
+            load), or the data has no usable labelled questions.
+
+        Examples
+        --------
+        >>> from sysone import DecoderModel
+        >>> questions = {"refund": {"type": "noul", "instructions": "Is the customer asking for a refund?"}}
+        >>> rows = [{"state": "Please refund my order.", "questions": questions, "expected": {"refund": True}},
+        ...         {"state": "Where is my parcel?", "questions": questions, "expected": {"refund": False}}]
+        >>> model = DecoderModel(tuning="head").fit(rows)  # doctest: +SKIP
         """
         self._check_params()
         examples, skipped = examples_from(data, questions, labeled=True, label_smoothing=self.label_smoothing)
@@ -762,13 +1043,50 @@ class SystemOneModel:
                                  % (type(self).__name__, type(self).__name__))
 
     def predict(self, X, questions: Mapping | None = None):
-        """Answer typed questions in the Jev `/v1/systemone` shape.
+        """Answer typed questions about one or more states.
 
-        - `predict(state, questions)` -> one result dict;
-        - `predict([state, ...], questions)` -> a list of results, one per state;
-        - `predict(rows)` -> a list of results, where each row is `{"state": ..., "questions": {...}}`.
+        Questions are given at prediction time, so a model can answer questions it wasn't
+        trained on, although it answers best on questions like its training data.
 
-        A state that is itself a list (conversation turns) must be wrapped: `predict([turns], questions)`.
+        Parameters
+        ----------
+        X : str, dict, list
+            What to answer about:
+
+            - one state (a string or a dict) with ``questions``: returns one result;
+            - a list of states with ``questions``: returns one result per state;
+            - a list of rows, each ``{"state": ..., "questions": {...}}``, with ``questions``
+              left out: returns one result per row.
+
+            A state that is itself a list (conversation turns) must be wrapped in a list:
+            ``predict([turns], questions)``.
+        questions : dict or None, default=None
+            The questions, ``{id: question}``. Each question has a ``type`` (``"choice"``,
+            ``"score"`` or ``"noul"``), ``instructions``, and for choice and score questions
+            ``criteria``: the option labels (or ``{label: description}``), or the score levels
+            from low to high.
+
+        Returns
+        -------
+        dict or list of dict
+            Each result is ``{"answers": {id: answer}, "usage": {"input_tokens": n,
+            "output_tokens": 0}}``. An answer holds its ``type``, the answer itself (``choice``:
+            the most probable label; ``score``: the expected level; ``noul``: the probability of
+            yes), ``probabilities`` per option for choice and score questions, a ``confidence``
+            for choice and score questions, and ``answer_confidence``, the calibrated probability
+            of the top option.
+
+        Raises
+        ------
+        NotFittedError
+            If the model has neither been fit nor loaded.
+
+        Examples
+        --------
+        >>> model.predict("I'd like my money back.", {"refund": {"type": "noul",
+        ...               "instructions": "Is the customer asking for a refund?"}})  # doctest: +SKIP
+        {'answers': {'refund': {'type': 'noul', 'noul': 0.97, 'answer_confidence': 0.97}},
+         'usage': {'input_tokens': 41, 'output_tokens': 0}}
         """
         self._check_fitted()
         single = False
@@ -790,12 +1108,41 @@ class SystemOneModel:
         return results[0] if single else results
 
     def evaluate(self, data, questions: Mapping | None = None, calibrated: bool = True) -> dict:
-        """Score the model on labelled data, in any form `fit` accepts.
+        """Score the model on labelled data.
 
-        Returns a plain dict with `overall`, `by_type`, `by_category` and `by_question` metrics
-        (accuracy, distance, log_loss, brier, ece, and score_error / auc where they apply). Hard
-        and soft labels are scored the same way; see `sysone.evaluation` for the definitions.
-        `calibrated=False` scores the probabilities before temperature scaling.
+        Hard and soft labels are scored the same way: each label becomes a target distribution
+        over the question's options.
+
+        Parameters
+        ----------
+        data : list of dict, DataFrame, datasets.Dataset, str or path
+            Labelled data, in any form :meth:`fit` accepts.
+        questions : dict or None, default=None
+            A question catalog, as in :meth:`fit`.
+        calibrated : bool, default=True
+            Score the calibrated probabilities. False scores them before temperature scaling,
+            to see what calibration changed; accuracy is the same either way.
+
+        Returns
+        -------
+        dict
+            ``overall``, ``by_type``, ``by_category`` and ``by_question`` metrics, each a dict
+            with ``n`` and:
+
+            - ``accuracy``: the top predicted option is the (raters' top) answer;
+            - ``distance``: total variation distance to the label, 0 to 1;
+            - ``log_loss``: cross-entropy against the label;
+            - ``brier``: squared distance to the label;
+            - ``ece``: expected calibration error of the top option;
+            - ``score_error`` (score questions): gap between predicted and true expected level;
+            - ``auc`` (yes/no questions): how well P(yes) ranks yes above no.
+
+            Pass several reports to :func:`~sysone.compare` to see them side by side.
+
+        Raises
+        ------
+        NotFittedError
+            If the model has neither been fit nor loaded.
         """
         self._check_fitted()
         examples, skipped = examples_from(data, questions, labeled=True)
@@ -832,12 +1179,31 @@ class SystemOneModel:
     # -- save / load ---------------------------------------------------------------------------
 
     def save(self, path, training_state="auto") -> Path:
-        """Write a self-contained folder. Frozen backbone weights are not saved; `load` downloads
-        the base model by name and revision.
+        """Save the model to a folder that :meth:`load` reads.
 
-        `training_state` decides whether what a later `fit` needs to resume this run exactly
-        (optimizer state, schedule position, last weights, random states) is included: "auto"
-        includes it when it is under 100 MB, True always, False never.
+        The folder holds the configuration, the decision head, calibration, any adapters or
+        fully trained layers, and the last training report. Frozen backbone weights are not
+        copied: :meth:`load` fetches the base model by name and revision. The folder can be
+        uploaded to the Hugging Face Hub as is.
+
+        Parameters
+        ----------
+        path : str or path
+            The folder to write; created if needed.
+        training_state : {"auto", True, False}, default="auto"
+            Whether to include what a later :meth:`fit` needs to resume this run exactly
+            (optimizer state, schedule position, last weights, random states). ``"auto"``
+            includes it when it is under 100 MB.
+
+        Returns
+        -------
+        pathlib.Path
+            The folder written.
+
+        Raises
+        ------
+        NotFittedError
+            If the model has neither been fit nor loaded.
         """
         from safetensors.torch import save_file
 
@@ -901,8 +1267,35 @@ class SystemOneModel:
 
     @classmethod
     def load(cls, path, **overrides) -> SystemOneModel:
-        """Load a model saved with `save`, from a local folder or a Hugging Face Hub repo id.
-        `overrides` replace saved runtime parameters such as `device` or `verbose`."""
+        """Load a model saved with :meth:`save`.
+
+        Call it on the class that saved the model, or on :class:`SystemOneModel` to load either
+        kind. Calling :meth:`fit` on a loaded model continues training it.
+
+        Parameters
+        ----------
+        path : str or path
+            A local folder, or the id of a Hugging Face Hub repo holding one.
+        **overrides
+            Parameters to replace the saved values, typically runtime settings such as
+            ``device`` or ``verbose``.
+
+        Returns
+        -------
+        SystemOneModel
+            The loaded model, ready to predict.
+
+        Raises
+        ------
+        ValueError
+            If the folder is not a saved sysone model.
+        TypeError
+            If it holds a different model class than the one ``load`` was called on.
+
+        Examples
+        --------
+        >>> model = DecoderModel.load("my-model", device="cpu")  # doctest: +SKIP
+        """
         from safetensors.torch import load_file
 
         path = Path(path)

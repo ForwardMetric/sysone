@@ -12,7 +12,29 @@ _REGISTRY: dict[str, type[Architecture]] = {}
 
 
 def register_architecture(model_type: str, cls: type[Architecture]) -> None:
-    """Make `cls` handle base models whose `AutoConfig.model_type` is `model_type`."""
+    """Use an architecture class for every base model of a given type.
+
+    After this call, a model whose ``model_name`` points to a base model of this type picks the
+    architecture automatically, and saved models that use it load without passing
+    ``architecture=``.
+
+    Parameters
+    ----------
+    model_type : str
+        The base model's ``AutoConfig.model_type``, such as ``"qwen3"`` or ``"modernbert"``.
+    cls : type
+        An :class:`~sysone.Architecture` subclass.
+
+    Raises
+    ------
+    TypeError
+        If ``cls`` is not an ``Architecture`` subclass.
+
+    Examples
+    --------
+    >>> from sysone import register_architecture
+    >>> register_architecture("llama", LlamaArchitecture)  # doctest: +SKIP
+    """
     if not (isinstance(cls, type) and issubclass(cls, Architecture)):
         raise TypeError("register_architecture needs an Architecture subclass, got %r" % (cls,))
     _REGISTRY[model_type] = cls

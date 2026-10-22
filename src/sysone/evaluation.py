@@ -119,12 +119,37 @@ def score(examples: Sequence[Example], probabilities: Sequence[Sequence[float]],
 
 
 def baselines(data, train=None, questions: Mapping | None = None) -> dict[str, dict]:
-    """Reports for simple guessers on the labelled `data`, to compare a model against.
+    """Score simple guessers on labelled data, to compare a trained model against.
 
-    - **random guess**: every option equally likely.
-    - **average answer** (when `train` is given): for each question (`category/qid`, same number
-      of options), the average target over the training data. Where a question never appears in
-      `train`, it falls back to the random guess.
+    A model is only useful if it beats these. On data where one answer dominates, the average
+    answer can score high accuracy on its own.
+
+    Parameters
+    ----------
+    data : list of dict, DataFrame, datasets.Dataset, str or path
+        Labelled data to score on, usually the test split, in any form
+        :meth:`SystemOneModel.fit` accepts.
+    train : same as ``data``, or None, default=None
+        Training data. When given, the ``"average answer"`` baseline is added.
+    questions : dict or None, default=None
+        A question catalog, as in :meth:`SystemOneModel.fit`.
+
+    Returns
+    -------
+    dict of str to dict
+        A report per baseline, in the same shape as :meth:`SystemOneModel.evaluate` returns:
+
+        - ``"random guess"``: every option equally likely;
+        - ``"average answer"`` (with ``train``): for each question (same category, id and
+          number of options), the average label over the training data; the random guess where
+          a question never appears in ``train``.
+
+    Examples
+    --------
+    >>> from sysone import baselines, compare
+    >>> results = baselines(test_rows, train=train_rows)      # doctest: +SKIP
+    >>> results["trained"] = model.evaluate(test_rows)        # doctest: +SKIP
+    >>> compare(results)                                      # doctest: +SKIP
     """
     examples, skipped = examples_from(data, questions, labeled=True)
     uniform = [[1.0 / ex.question.k] * ex.question.k for ex in examples]
@@ -148,11 +173,32 @@ def baselines(data, train=None, questions: Mapping | None = None) -> dict[str, d
 
 
 def compare(reports: Mapping[str, dict], by: str = "type", metric: str = "accuracy"):
-    """A pandas table comparing reports side by side, one row per report.
+    """Put evaluation reports side by side in a table, one row per report.
 
-    - `by="overall"`: every metric as a column.
-    - `by="type"`, `"category"` or `"question"`: one column per group, plus `overall`, showing
-      `metric` (default `"accuracy"`).
+    Needs pandas (``pip install "sysone[pandas]"``).
+
+    Parameters
+    ----------
+    reports : dict of str to dict
+        Reports from :meth:`SystemOneModel.evaluate` or :func:`baselines`, keyed by the name to
+        show for each row.
+    by : {"type", "overall", "category", "question"}, default="type"
+        ``"overall"`` shows every metric as a column. The others show one column per question
+        type, category or question, plus ``overall``, for a single ``metric``.
+    metric : str, default="accuracy"
+        The metric to show when ``by`` is not ``"overall"``: ``"accuracy"``, ``"distance"``,
+        ``"log_loss"``, ``"brier"``, ``"ece"``, ``"score_error"`` or ``"auc"``.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per report. A cell is empty where a metric doesn't apply to a group.
+
+    Examples
+    --------
+    >>> compare(results)                            # accuracy per question type  # doctest: +SKIP
+    >>> compare(results, by="overall")              # every metric  # doctest: +SKIP
+    >>> compare(results, by="question", metric="score_error")  # doctest: +SKIP
     """
     try:
         import pandas as pd

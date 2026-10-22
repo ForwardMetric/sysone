@@ -38,6 +38,8 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/ForwardMetric/sysone"
+Documentation = "https://sysone.readthedocs.io"
+Changelog = "https://sysone.readthedocs.io/en/latest/changelog.html"
 Repository = "https://github.com/ForwardMetric/sysone"
 Issues = "https://github.com/ForwardMetric/sysone/issues"
 Design = "https://github.com/ForwardMetric/sysone/blob/main/docs/DESIGN.md"
@@ -53,6 +55,13 @@ dev = [
     "tokenizers>=0.20",
     "ipykernel>=7.3.0",
     "datasets>=5.1.0",
+]
+docs = [
+    "myst-nb>=1.1",
+    "numpydoc>=1.8",
+    "pydata-sphinx-theme>=0.16",
+    "sphinx>=8.1",
+    "sphinx-copybutton>=0.5",
 ]
 
 [build-system]

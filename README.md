@@ -1,21 +1,36 @@
 # sysone
 
-Fine-tune and calibrate "system one" decision models: small transformers that answer typed
-questions (choice, score, yes/no) about a piece of text in a single forward pass. You pick a base
-model, call `fit` on labelled rows and `predict` on new ones. sysone handles tokenization,
-position ids, attention masks, layer freezing, the decision head and the training loop.
+[![PyPI](https://img.shields.io/pypi/v/sysone)](https://pypi.org/project/sysone/)
+[![Python](https://img.shields.io/pypi/pyversions/sysone)](https://pypi.org/project/sysone/)
+[![Tests](https://github.com/ForwardMetric/sysone/actions/workflows/tests.yml/badge.svg)](https://github.com/ForwardMetric/sysone/actions/workflows/tests.yml)
+[![Docs](https://readthedocs.org/projects/sysone/badge/?version=latest)](https://sysone.readthedocs.io)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/ForwardMetric/sysone/blob/main/LICENSE)
 
-Supported base models: **ModernBERT** (`EncoderModel`) and **Qwen3** (`DecoderModel`). Others can
-be added by writing one architecture class.
+**Fine-tune small transformers to answer typed questions about text, in one forward pass.**
+
+sysone trains "system one" decision models: fast models that read a piece of text, such as a
+support ticket, an email or a log, and answer questions about it:
+
+| type | example question | the answer |
+|---|---|---|
+| `choice` | Which team should handle it? | one label from a list, with a probability for each |
+| `score` | How severe is it, from none to critical? | a level on an ordered scale |
+| `noul` | Is the customer asking for a refund? | the probability of yes |
+
+You pick a base model (ModernBERT or Qwen3), call `fit` on labelled examples and `predict` on new
+text, as in scikit-learn. sysone handles tokenization, attention masks, layer freezing, LoRA and
+QLoRA adapters, the training loop, early stopping and calibration.
+
+**Documentation: [sysone.readthedocs.io](https://sysone.readthedocs.io)**
 
 ## Install
 
 ```bash
 pip install sysone
-pip install "sysone[pandas]"   # also installs pandas, for the comparison tables of `compare`
 ```
 
-On Linux and Windows this also installs bitsandbytes, for 4-bit training (`tuning="qlora"`).
+Python 3.10+. Training runs on an NVIDIA GPU, Apple Silicon or the CPU; 4-bit QLoRA needs an
+NVIDIA GPU. See [Installation](https://sysone.readthedocs.io/en/latest/install.html).
 
 ## Quickstart
 
@@ -32,86 +47,77 @@ questions = {
 
 rows = [
     {"state": "Hi, my order is stuck in the warehouse and our line is down.",
-     "category": "operations",
      "questions": questions,
      "expected": {"team": "operations", "severity": 3, "refund": False}},
-    # ... more rows; rows may mix different question sets
+    # ... more labelled rows; rows may mix different question sets
 ]
 
-model = DecoderModel(tuning="head").fit(rows)
+model = DecoderModel(tuning="head").fit(rows)   # head only: minutes, even on a laptop
 
 model.predict("I'd like my money back for the broken unit.", questions)
-# {"answers": {"team": {"type": "choice", "choice": "servicing", "probabilities": {...}, "confidence": ...},
-#              "severity": {"type": "score", "score": 1.2, "legend": {...}, ...},
-#              "refund": {"type": "noul", "noul": 0.97, ...}},
+# {"answers": {"team":     {"type": "choice", "choice": "servicing", "probabilities": {...}, ...},
+#              "severity": {"type": "score", "score": 1.2, ...},
+#              "refund":   {"type": "noul", "noul": 0.97, ...}},
 #  "usage": {"input_tokens": 118, "output_tokens": 0}}
 
-model.save("my-model")
-model = DecoderModel.load("my-model")
+model.save("ticket-model")
+model = DecoderModel.load("ticket-model")
 ```
 
-To measure the model on held-out labelled rows, and compare it with simple baselines:
+Leave out `tuning="head"` to fine-tune the backbone as well (QLoRA for `DecoderModel`, full
+tuning for `EncoderModel`). To check a model against simple baselines on held-out rows:
 
 ```python
 from sysone import baselines, compare
 
-results = baselines(test_rows, train=rows)      # random guess, average answer
+results = baselines(test_rows, train=rows)     # random guess, average answer
 results["trained"] = model.evaluate(test_rows)
-compare(results)                                # accuracy per question type, as a table
+compare(results)                               # accuracy per question type
 ```
 
-Answers follow the Jev `/v1/systemone` response shape. Training data can be records like the
-above, records plus a shared question catalog, a long DataFrame, or a `.jsonl` / `.csv` /
-`.parquet` file. Labels go in `expected`, in a `label` inside each question, or as soft `gold`
-probabilities.
+## Features
 
-Example notebooks, each comparing accuracy before and after training:
+- **One model, many questions**: questions are passed at prediction time, and training data
+  can mix question sets.
+- **Hard or soft labels**: one right answer, or a probability per option from several raters.
+- **Data in the form you have it**: lists of dicts, `.jsonl`, `.csv` or `.parquet` files,
+  DataFrames, or Hugging Face datasets.
+- **Training modes**: head only, LoRA, QLoRA or full fine-tuning, with counts that work on any
+  model depth.
+- **Calibrated probabilities**: temperatures fitted on held-out data, so `answer_confidence`
+  matches how often answers are right.
+- **Long runs that survive**: early stopping, exact resume after Ctrl-C, optional autosave, and
+  an on-disk feature cache for fast head-only experiments.
+- **Evaluation**: accuracy, log loss, Brier score, calibration error, score error and AUC, per
+  question type, category and question, next to baselines.
 
-- [quickstart.ipynb](https://github.com/ForwardMetric/sysone/blob/main/examples/quickstart.ipynb): synthetic support tickets, a few minutes;
-- bev-decision-150K, 18 domains, hard labels:
-  [decoder_bev_decision.ipynb](https://github.com/ForwardMetric/sysone/blob/main/examples/decoder_bev_decision.ipynb) (Qwen3) and
-  [encoder_bev_decision.ipynb](https://github.com/ForwardMetric/sysone/blob/main/examples/encoder_bev_decision.ipynb) (ModernBERT);
-- typed-decisions, soft labels from several raters:
-  [decoder_typed_decisions.ipynb](https://github.com/ForwardMetric/sysone/blob/main/examples/decoder_typed_decisions.ipynb) (Qwen3) and
-  [encoder_typed_decisions.ipynb](https://github.com/ForwardMetric/sysone/blob/main/examples/encoder_typed_decisions.ipynb) (ModernBERT);
-- measuring `ordinal_weight` for score questions on typed-decisions:
-  [encoder_typed_decisions_ordinal_weight.ipynb](https://github.com/ForwardMetric/sysone/blob/main/examples/encoder_typed_decisions_ordinal_weight.ipynb).
+## Examples
 
-Notebooks other than the quickstart are named `<model type>_<dataset>.ipynb`.
+Notebooks on public datasets, each runnable on Google Colab, are listed in the
+[examples gallery](https://sysone.readthedocs.io/en/latest/examples.html). Start with the
+[quickstart notebook](https://colab.research.google.com/github/ForwardMetric/sysone/blob/main/examples/quickstart.ipynb).
 
 ## Status
 
-This is an early version (0.3). Training covers every `tuning` mode:
+sysone is in early development (0.3): the API may change between minor versions, and every
+change is listed in the [changelog](https://sysone.readthedocs.io/en/latest/changelog.html).
+Supported base models are ModernBERT and Qwen3; others can be added with one
+[architecture class](https://sysone.readthedocs.io/en/latest/user_guide/architectures.html).
 
-- `"head"`: the backbone is frozen, its outputs are computed once and cached (in memory, and on
-  disk with `cache_dir`), and only the decision head trains;
-- `"lora"`, `"qlora"` and `"full"`: adapters or whole layers of the backbone train along with the
-  head. These run on a laptop GPU (Apple MPS) for small datasets; a CUDA GPU is recommended for
-  full-size runs. `"qlora"` needs bitsandbytes and an NVIDIA GPU and falls back to `"lora"`
-  elsewhere, with a warning. It has trained, saved and reloaded in real 4-bit on a Colab GPU.
+## Contributing
 
-`DecoderModel` (Qwen3) defaults to `"qlora"`. `EncoderModel` (ModernBERT) defaults to `"full"`:
-adapters barely moved ModernBERT, while full tuning reached 0.79 test accuracy on typed-decisions.
+Issues and pull requests are welcome. See
+[Development](https://sysone.readthedocs.io/en/latest/development.html) for running the tests and
+building the docs, and the [design document](https://github.com/ForwardMetric/sysone/blob/main/docs/DESIGN.md)
+for how sysone works.
 
-Training stops at `epochs`, by early stopping, or at `target_loss`. A run that is interrupted
-(Ctrl-C), or saved and loaded, resumes exactly where it stopped. With `checkpoint_dir`, `fit` also
-saves the model when it ends or is interrupted, and every `checkpoint_every` steps if set, so a
-disconnected notebook can pick the run up again; nothing is written to disk by default.
+## Acknowledgements
 
-Score questions add an ordinal term to the loss (`ordinal_weight`), so a near miss costs less than
-a far one. After training, probabilities are calibrated with temperatures fitted on the validation
-slice, so `answer_confidence` matches how often answers are right; reports include Brier score and
-expected calibration error, before and after calibration. `head="full"` is designed but not yet
-implemented.
+sysone builds on [Laya](https://github.com/NandhaKishorM/laya), the tutorials and code of
+[Neural AVB](https://www.youtube.com/@avb_fj), ModernBERT, Qwen3, the Typed Decisions benchmark,
+the System One format of TypeSafe AI and many open-source libraries; see
+[Acknowledgements](https://sysone.readthedocs.io/en/latest/acknowledgements.html).
 
-See [docs/DESIGN.md](https://github.com/ForwardMetric/sysone/blob/main/docs/DESIGN.md) for the full design: every parameter, the layouts,
-architectures, heads, training and checkpoint format.
+## License
 
-## Development
-
-```bash
-uv sync                  # or: pip install -e . with the dev dependencies
-uv run pytest            # fast tests on tiny random-weight models, no downloads
-uv run pytest -m slow    # end-to-end tests on the real base models (~1.8 GB download)
-uv run ruff check src tests
-```
+MIT

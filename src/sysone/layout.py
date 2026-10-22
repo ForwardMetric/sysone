@@ -20,6 +20,26 @@ LAYOUTS = ("parallel", "sequential")
 
 @dataclass
 class Pieces:
+    """One question's token sequence, as an architecture arranges it.
+
+    Returned by :meth:`~sysone.Architecture.pieces`. sysone then assigns position ids and
+    attention masks for the chosen ``layout``.
+
+    Attributes
+    ----------
+    prefix : list of int
+        Shared tokens before the options, such as the question and, for a causal model, the state.
+    options : list of list of int
+        Each option's tokens, including any delimiters around it.
+    option_read : list of int
+        For each option, the index within its tokens of the token whose vector represents it.
+    suffix : list of int
+        Shared tokens after the options.
+    summary : tuple of (str, int)
+        Where the summary vector is read: ``("prefix", i)`` or ``("suffix", i)``, where a
+        negative ``i`` counts from the end of that piece.
+    """
+
     prefix: list[int]
     options: list[list[int]]
     option_read: list[int]  # index, within each option's tokens, of the token its vector is read from
