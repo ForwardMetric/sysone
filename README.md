@@ -35,6 +35,8 @@ Train a model to triage customer-support conversations from the public
 [typed-decisions](https://huggingface.co/datasets/LocalLLaMA/typed-decisions) dataset (300
 training and 100 test conversations), then check it against simple baselines.
 
+### 1. Train and evaluate
+
 ```python
 import json
 
@@ -62,12 +64,28 @@ def load_rows(split):
 train, test = load_rows("train"), load_rows("test")
 
 # Fine-tunes every layer of ModernBERT, then calibrates: run this on a decent GPU (e.g. a Colab L4).
-model = EncoderModel().fit(train)
+model = EncoderModel(tuning="full", seed=0).fit(train)
 
 results = baselines(test, train=train)   # random guess and average answer
-results["sysone"] = model.evaluate(test)
+results["full-fine-tuning"] = model.evaluate(test)
 compare(results, by="overall")           # accuracy, log loss, Brier score, calibration error
+```
 
+On a Colab GPU, this gave:
+
+```text
+                  accuracy  distance  log_loss     brier       ece
+random guess          0.20  0.800000  1.609438  0.800000  0.000000
+average answer        0.35  0.701567  1.362123  0.709700  0.056667
+full-fine-tuning      0.73  0.305703  0.659549  0.360719  0.111332
+```
+
+The fine-tuned model picks the right answer 73% of the time, against 35% for the average
+answer in the training data, and halves the log loss. Results vary a little with `seed`.
+
+### 2. Predict and save
+
+```python
 model.predict("I was charged twice for the same invoice. Please fix it.", questions)
 # {"answers": {"category": {"type": "choice", "choice": "billing",
 #                           "probabilities": {"account": ..., "billing": ..., ...}, ...},
