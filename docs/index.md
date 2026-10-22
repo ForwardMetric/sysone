@@ -1,6 +1,6 @@
 # sysone
 
-**Fine-tune small transformers to answer typed questions about text, in one forward pass.**
+**Train calibrated "system one" models on your own labels with a single `fit` call.**
 
 sysone trains "system one" decision models: fast models that read a piece of text, such as a
 support ticket, an email or a log, and answer questions about it. Each question is one of three
@@ -35,7 +35,7 @@ model.predict("My order arrived broken and I want my money back.", questions)
 
 - **One model, many questions.** Questions are passed at prediction time. One model answers
   any mix of choice, score and yes/no questions, and training data can mix question sets freely.
-- **Fast answers.** A question is answered in a single forward pass of a small model, with no
+- **Fast answers.** A small model reads the text and a decision head picks the answer, with no
   text generation.
 - **Probabilities you can trust.** After training, probabilities are calibrated on held-out
   data, so "90% sure" means right about 90% of the time.

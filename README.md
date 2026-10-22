@@ -6,20 +6,18 @@
 [![Docs](https://readthedocs.org/projects/sysone/badge/?version=latest)](https://sysone.readthedocs.io)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/ForwardMetric/sysone/blob/main/LICENSE)
 
-**Fine-tune small transformers to answer typed questions about text, in one forward pass.**
+**Train calibrated "system one" models on your own labels with a single `fit` call.**
 
-sysone trains "system one" decision models: fast models that read a piece of text, such as a
-support ticket, an email or a log, and answer questions about it:
+A system one model is a small, fast model that reads a piece of text, such as a support thread,
+an invoice or an agent trace, and answers a fixed kind of question about it with a probability
+for each answer. It doesn't generate text or reason step by step; it makes the quick, routine
+call that you would otherwise send to a large LLM, at a fraction of the cost and latency.
 
-| type | example question | the answer |
-|---|---|---|
-| `choice` | Which team should handle it? | one label from a list, with a probability for each |
-| `score` | How severe is it, from none to critical? | a level on an ordered scale |
-| `noul` | Is the customer asking for a refund? | the probability of yes |
-
-You pick a base model (ModernBERT or Qwen3), call `fit` on labelled examples and `predict` on new
-text, as in scikit-learn. sysone handles tokenization, attention masks, layer freezing, LoRA and
-QLoRA adapters, the training loop, early stopping and calibration.
+Building one usually means writing a prompt format, tokenizing, freezing layers, attaching
+adapters and a classification head, writing a training loop, picking when to stop, and then
+correcting over-confident probabilities. sysone does all of that for you. You describe the
+questions, hand it labelled examples, and get back a model whose "80% sure" means right about
+80% of the time.
 
 **Documentation: [sysone.readthedocs.io](https://sysone.readthedocs.io)**
 
@@ -29,80 +27,142 @@ QLoRA adapters, the training loop, early stopping and calibration.
 pip install sysone
 ```
 
-Python 3.10+. Training runs on an NVIDIA GPU, Apple Silicon or the CPU; 4-bit QLoRA needs an
-NVIDIA GPU. See [Installation](https://sysone.readthedocs.io/en/latest/install.html).
+Python 3.10+. Trains on an NVIDIA GPU, Apple Silicon or the CPU.
 
 ## Quickstart
+
+Train a model to triage customer-support conversations from the public
+[typed-decisions](https://huggingface.co/datasets/LocalLLaMA/typed-decisions) dataset (300
+training and 100 test conversations), then check it against simple baselines.
+
+```python
+import json
+
+from datasets import load_dataset
+from sysone import EncoderModel, baselines, compare
+
+# The questions: what the model should answer about each conversation.
+questions = {
+    "category": {"type": "choice",
+                 "instructions": "What is this customer conversation primarily about?",
+                 "criteria": ["account", "billing", "delivery", "refund", "technical"]},
+    "action":   {"type": "choice",
+                 "instructions": "What should the assistant do next with this conversation?",
+                 "criteria": ["answer_directly", "close_no_action", "escalate_to_human",
+                              "execute_refund", "request_information"]},
+}
+
+# Labelled rows: the conversation (state), the questions, and the right answers (expected).
+def load_rows(split):
+    ds = load_dataset("LocalLLaMA/typed-decisions", "customer_service", split=split)
+    return [{"state": r["state"], "questions": questions,
+             "expected": {q: json.loads(r["gold"])[q]["label"] for q in questions}}
+            for r in ds]
+
+train, test = load_rows("train"), load_rows("test")
+
+# Fine-tunes every layer of ModernBERT, then calibrates: run this on a decent GPU (e.g. a Colab L4).
+model = EncoderModel().fit(train)
+
+results = baselines(test, train=train)   # random guess and average answer
+results["sysone"] = model.evaluate(test)
+compare(results, by="overall")           # accuracy, log loss, Brier score, calibration error
+
+model.predict("I was charged twice for the same invoice. Please fix it.", questions)
+# {"answers": {"category": {"type": "choice", "choice": "billing",
+#                           "probabilities": {"account": ..., "billing": ..., ...}, ...},
+#              "action":   {...}}, ...}
+
+model.save("support-triage")             # reload with EncoderModel.load("support-triage")
+```
+
+Questions are plain dicts, and rows can come from lists of dicts, `.jsonl`, `.csv` or
+`.parquet` files, DataFrames or Hugging Face datasets. The
+[quickstart guide](https://sysone.readthedocs.io/en/latest/quickstart.html) walks through each
+step.
+
+## What `fit` does for you
+
+1. **Builds the prompt**: the text, the question and its options are laid out in one input; you
+   never write a template.
+2. **Sizes everything to the model and data**: token budgets, which layers train, the head's
+   size, the batch size that fits in memory, and the learning rates.
+3. **Trains**: holds back 10% of the rows for validation, stops early when validation loss
+   stops improving, and keeps the best weights. A run stopped with Ctrl-C resumes where it
+   left off.
+4. **Calibrates**: fits a temperature on the validation rows, so probabilities match how often
+   answers are right. Accuracy is unchanged; log loss, Brier score and calibration error improve.
+5. **Reports**: `evaluate` and `compare` give accuracy, log loss, Brier score, calibration error
+   and more, per question type, next to simple baselines.
+
+## Questions it can answer
+
+Each question is one of three types, and one model can answer any mix of them. Questions are
+passed at prediction time, so new questions don't need a new model class, and training rows can
+mix question sets.
+
+| type | example question | the answer |
+|---|---|---|
+| `choice` | Which team should handle it? | one label from a list, with a probability for each |
+| `score` | How urgent is it, from none to critical? | a level on an ordered scale |
+| `noul` | Does this need a human? | the probability of yes |
+
+Labels can be one right answer, or a probability per option when several raters disagree.
+
+## Models
+
+| class | base model | default training |
+|---|---|---|
+| `EncoderModel` | [ModernBERT](https://huggingface.co/answerdotai/ModernBERT-base) (encoder) | every layer |
+| `DecoderModel` | [Qwen3](https://huggingface.co/Qwen/Qwen3-0.6B) (decoder) | QLoRA adapters |
+
+Both accept other sizes of the same family, such as `DecoderModel("Qwen/Qwen3-1.7B")`. Support
+for more model families is coming; until then, a new family can be added with one
+[architecture class](https://sysone.readthedocs.io/en/latest/user_guide/architectures.html).
+
+## When you need more control
+
+The defaults are meant to work without tuning, but every choice can be overridden:
 
 ```python
 from sysone import DecoderModel
 
-questions = {
-    "team":     {"type": "choice", "instructions": "Which team should handle it?",
-                 "criteria": ["sales", "operations", "servicing"]},
-    "severity": {"type": "score", "instructions": "How severe is it?",
-                 "criteria": ["none", "minor", "major", "critical"]},
-    "refund":   {"type": "noul", "instructions": "Is the customer asking for a refund?"},
-}
-
-rows = [
-    {"state": "Hi, my order is stuck in the warehouse and our line is down.",
-     "questions": questions,
-     "expected": {"team": "operations", "severity": 3, "refund": False}},
-    # ... more labelled rows; rows may mix different question sets
-]
-
-model = DecoderModel(tuning="head").fit(rows)   # head only: minutes, even on a laptop
-
-model.predict("I'd like my money back for the broken unit.", questions)
-# {"answers": {"team":     {"type": "choice", "choice": "servicing", "probabilities": {...}, ...},
-#              "severity": {"type": "score", "score": 1.2, ...},
-#              "refund":   {"type": "noul", "noul": 0.97, ...}},
-#  "usage": {"input_tokens": 118, "output_tokens": 0}}
-
-model.save("ticket-model")
-model = DecoderModel.load("ticket-model")
+model = DecoderModel(
+    "Qwen/Qwen3-1.7B",
+    tuning="lora",            # "head", "lora", "qlora" or "full"
+    num_layers=0.7,           # keep the bottom 70% of layers
+    lora_layers="all",        # adapters on every kept layer
+    lora_rank=16,
+    backbone_lr=1e-4,
+    head_lr=1e-3,
+    epochs=10,
+    n_iter_no_change=2,       # early-stopping patience, in epochs
+    target_loss=0.4,          # or stop once validation loss reaches this
+    loss="soft-ce",
+    ordinal_weight=1.0,       # how much score questions respect level order
+    balance="category",       # equal weight per category of rows
+    calibrate=True,
+    checkpoint_dir="runs/",   # autosave during long runs
+    checkpoint_every=500,     # optimizer steps between autosaves
+    precision="bf16",
+    device="cuda",
+)
 ```
 
-Leave out `tuning="head"` to fine-tune the backbone as well (QLoRA for `DecoderModel`, full
-tuning for `EncoderModel`). To check a model against simple baselines on held-out rows:
+[Choosing how to train](https://sysone.readthedocs.io/en/latest/user_guide/training.html)
+explains when each setting matters, and the
+[API reference](https://sysone.readthedocs.io/en/latest/api.html) lists every parameter.
 
-```python
-from sysone import baselines, compare
+## Learn more
 
-results = baselines(test_rows, train=rows)     # random guess, average answer
-results["trained"] = model.evaluate(test_rows)
-compare(results)                               # accuracy per question type
-```
-
-## Features
-
-- **One model, many questions**: questions are passed at prediction time, and training data
-  can mix question sets.
-- **Hard or soft labels**: one right answer, or a probability per option from several raters.
-- **Data in the form you have it**: lists of dicts, `.jsonl`, `.csv` or `.parquet` files,
-  DataFrames, or Hugging Face datasets.
-- **Training modes**: head only, LoRA, QLoRA or full fine-tuning, with counts that work on any
-  model depth.
-- **Calibrated probabilities**: temperatures fitted on held-out data, so `answer_confidence`
-  matches how often answers are right.
-- **Long runs that survive**: early stopping, exact resume after Ctrl-C, optional autosave, and
-  an on-disk feature cache for fast head-only experiments.
-- **Evaluation**: accuracy, log loss, Brier score, calibration error, score error and AUC, per
-  question type, category and question, next to baselines.
-
-## Examples
-
-Notebooks on public datasets, each runnable on Google Colab, are listed in the
-[examples gallery](https://sysone.readthedocs.io/en/latest/examples.html). Start with the
-[quickstart notebook](https://colab.research.google.com/github/ForwardMetric/sysone/blob/main/examples/quickstart.ipynb).
-
-## Status
-
-sysone is in early development (0.3): the API may change between minor versions, and every
-change is listed in the [changelog](https://sysone.readthedocs.io/en/latest/changelog.html).
-Supported base models are ModernBERT and Qwen3; others can be added with one
-[architecture class](https://sysone.readthedocs.io/en/latest/user_guide/architectures.html).
+- [Quickstart](https://sysone.readthedocs.io/en/latest/quickstart.html): questions, labels,
+  training and predictions step by step.
+- [User guide](https://sysone.readthedocs.io/en/latest/user_guide/index.html): data formats,
+  training options, predictions, evaluation and calibration, saving and sharing.
+- [Examples](https://sysone.readthedocs.io/en/latest/examples.html): notebooks on public
+  datasets, runnable on Google Colab.
+- [Changelog](https://sysone.readthedocs.io/en/latest/changelog.html): sysone is in early
+  development (0.3), and the API may change between minor versions.
 
 ## Contributing
 
