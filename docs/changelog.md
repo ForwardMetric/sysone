@@ -16,6 +16,10 @@ More base models, a class picker, and abstention.
   as `"abstained": True`; `evaluate(..., abstain=t)` adds `coverage` and scores only the answers
   given; `abstention_threshold(rows, target_accuracy=...)` picks thresholds per question type
   on held-out data. See [Abstaining](user_guide/predictions.md#abstaining).
+- **`push_to_hub`** uploads a model with a model card, so others can load it with
+  `Model.load("user/name")`. See [Sharing on the Hugging Face Hub](user_guide/saving.md#sharing-on-the-hugging-face-hub).
+- Yes/no answers also give `probabilities` (`"false"` and `"true"`), as choice and score answers
+  do, which benchmark scorers expect.
 - `save` now says it saved the model when it leaves out a large training state, instead of
   "training state not saved".
 - The load log names the weight format for `tuning="qlora"` (for example "4-bit nf4 weights,

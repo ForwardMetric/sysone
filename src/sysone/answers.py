@@ -87,5 +87,7 @@ def _answer(question: Question, p: list[float], top: float) -> dict:
     return {
         "type": "noul",
         "noul": round(p[1], _DIGITS),
+        # the same distribution keyed as choice answers are, which benchmark scorers read
+        "probabilities": {"false": round(p[0], _DIGITS), "true": round(p[1], _DIGITS)},
         "answer_confidence": round(top, _DIGITS),
     }

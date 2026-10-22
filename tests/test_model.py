@@ -25,7 +25,7 @@ def test_fit_predict_save_load(tiny_model, tmp_path):
     assert answers["color"]["type"] == "choice" and answers["color"]["choice"] in ("red", "green", "blue")
     assert sum(answers["color"]["probabilities"].values()) == pytest.approx(1.0, abs=1e-3)
     assert 0 <= answers["severity"]["score"] <= 3 and set(answers["severity"]["legend"]) == {"0", "1", "2", "3"}
-    assert set(answers["urgent"]) == {"type", "noul", "answer_confidence"}
+    assert set(answers["urgent"]) == {"type", "noul", "probabilities", "answer_confidence"}
     assert result["usage"]["input_tokens"] > 0 and result["usage"]["output_tokens"] == 0
 
     saved = model.save(tmp_path / "out")

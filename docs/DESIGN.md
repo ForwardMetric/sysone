@@ -34,7 +34,8 @@ result = model.predict(
 # {"answers": {
 #     "severity": {"type": "score", "score": 2.1, "legend": {"0": "none", ...},
 #                  "probabilities": {"0": 0.02, ...}, "confidence": 0.71, "answer_confidence": 0.64},
-#     "refund":   {"type": "noul", "noul": 0.93, "answer_confidence": 0.93},
+#     "refund":   {"type": "noul", "noul": 0.93, "probabilities": {"false": 0.07, "true": 0.93},
+#                  "answer_confidence": 0.93},
 #     "team":     {"type": "choice", "choice": "operations",
 #                  "probabilities": {...}, "confidence": 0.88, "answer_confidence": 0.91}},
 #  "usage": {"input_tokens": 61, "output_tokens": 0}}
@@ -1045,7 +1046,18 @@ Release as 0.4.0.
      `Model`), `EncoderModel` with a causal architecture, or `DecoderModel` with a bidirectional
      one, raises a `ValueError` naming the model, what it is, and the class to use instead (or
      `sysone.Model`). This applies to an `architecture=` passed by hand as well.
-4. **Polish:**
+4. **Sharing on the Hub.** `model.push_to_hub(repo_id, private=None, token=None, license=None)`
+   saves the model without its training state, writes a `README.md` model card (Hub metadata
+   with `library_name: sysone` and `base_model`, how to install and load it, a gated-base-model
+   note, and the training summary: base model and revision, class and tuning, data sizes,
+   validation accuracy, calibration), creates the repo if needed and uploads the folder. Anyone
+   then loads it with `Model.load(repo_id)`.
+   - Noul answers add `"probabilities": {"false": p, "true": p}`. Benchmark scorers, such as
+     typed-decisions', read every answer's `probabilities` and would otherwise score a noul answer
+     as a uniform guess. The field is added, so code reading `noul` is unaffected.
+   - Benchmark result files (`.eval_results/*.yaml`) are not written by sysone: benchmarks define
+     their own metrics and submission scripts, which the benchmark notebook uses.
+5. **Polish:**
    - `save` reports what it saved before what it left out: "saved the model; left out the 1.3 GB
      training state, which is only needed to resume training (training_state=True includes
      it)".

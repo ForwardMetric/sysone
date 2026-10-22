@@ -1099,7 +1099,7 @@ class SystemOneModel:
             Each result is ``{"answers": {id: answer}, "usage": {"input_tokens": n,
             "output_tokens": 0}}``. An answer holds its ``type``, the answer itself (``choice``:
             the most probable label; ``score``: the expected level; ``noul``: the probability of
-            yes), ``probabilities`` per option for choice and score questions, a ``confidence``
+            yes), ``probabilities`` per option (``"false"`` and ``"true"`` for noul), a ``confidence``
             for choice and score questions, ``answer_confidence``, the calibrated probability
             of the top option, and with ``abstain``, ``abstained``.
 
@@ -1114,7 +1114,8 @@ class SystemOneModel:
         --------
         >>> model.predict("I'd like my money back.", {"refund": {"type": "noul",
         ...               "instructions": "Is the customer asking for a refund?"}})  # doctest: +SKIP
-        {'answers': {'refund': {'type': 'noul', 'noul': 0.97, 'answer_confidence': 0.97}},
+        {'answers': {'refund': {'type': 'noul', 'noul': 0.97, 'probabilities': {'false': 0.03, 'true': 0.97},
+                                'answer_confidence': 0.97}},
          'usage': {'input_tokens': 41, 'output_tokens': 0}}
         """
         self._check_fitted()
@@ -1357,6 +1358,53 @@ class SystemOneModel:
                           "resume training (save(path, training_state=True) includes it)"
                           % (path, format_bytes(size)))
         return path
+
+    def push_to_hub(self, repo_id: str, private: bool | None = None, token: str | None = None,
+                    license: str | None = None, commit_message: str = "Upload sysone model") -> str:  # noqa: A002
+        """Upload the model to the Hugging Face Hub, with a model card, so anyone can load it.
+
+        Saves the model without its training state (see :meth:`save`), writes a ``README.md``
+        model card (how to install and load it, the base model, and the training and calibration
+        summary), and uploads the folder, creating the repo if needed. Others then load it with
+        ``Model.load(repo_id)``. The base model is not uploaded: it is downloaded from its own
+        repo, so a gated base model needs its licence accepted by each user.
+
+        Parameters
+        ----------
+        repo_id : str
+            The Hub repo, ``"user/name"`` or ``"org/name"``.
+        private : bool or None, default=None
+            Create the repo as private. None follows the account's default (public unless the
+            organization says otherwise). Has no effect on an existing repo.
+        token : str or None, default=None
+            A Hugging Face token with write access. None uses the logged-in account
+            (``hf auth login``) or ``HF_TOKEN``.
+        license : str or None, default=None
+            A license identifier for the model card, such as ``"apache-2.0"``. Check that it is
+            compatible with the base model's license.
+        commit_message : str, default="Upload sysone model"
+            The message of the upload commit.
+
+        Returns
+        -------
+        str
+            The URL of the upload commit.
+
+        Raises
+        ------
+        NotFittedError
+            If the model has neither been fit nor loaded.
+
+        Examples
+        --------
+        >>> model.push_to_hub("my-org/ticket-triage", private=True)  # doctest: +SKIP
+        >>> Model.load("my-org/ticket-triage")                       # doctest: +SKIP
+        """
+        from .hub import push_to_hub
+
+        self._check_fitted()
+        return push_to_hub(self, repo_id, private=private, token=token, license=license,
+                           commit_message=commit_message)
 
     @classmethod
     def load(cls, path, **overrides) -> SystemOneModel:

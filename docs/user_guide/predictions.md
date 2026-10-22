@@ -30,7 +30,8 @@ States longer than `max_state_tokens` (measured on the training data) keep their
                  "legend": {"0": "none", "1": "minor", "2": "major", "3": "critical"},
                  "probabilities": {"0": 0.1, "1": 0.62, "2": 0.24, "3": 0.04},
                  "confidence": 0.55, "answer_confidence": 0.62},
-    "refund":   {"type": "noul", "noul": 0.97, "answer_confidence": 0.97}},
+    "refund":   {"type": "noul", "noul": 0.97, "probabilities": {"false": 0.03, "true": 0.97},
+                 "answer_confidence": 0.97}},
  "usage": {"input_tokens": 118, "output_tokens": 0}}
 ```
 
@@ -39,7 +40,7 @@ Results are plain dicts, ready to serialise as JSON, in the response shape of th
 | field | choice | score | noul |
 |---|---|---|---|
 | the answer | `choice`: the most probable label | `score`: the expected level, `Σ level × p` | `noul`: the probability of yes |
-| `probabilities` | per label | per level index | |
+| `probabilities` | per label | per level index | `"false"` and `"true"` |
 | `legend` | | level index to its text | |
 | `confidence` | yes | yes | |
 | `answer_confidence` | yes | yes | yes |
