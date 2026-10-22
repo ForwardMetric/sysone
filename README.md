@@ -81,14 +81,14 @@ Notebooks other than the quickstart are named `<model type>_<dataset>.ipynb`.
 
 ## Status
 
-This is an early version (0.2). Training covers every `tuning` mode:
+This is an early version (0.3). Training covers every `tuning` mode:
 
 - `"head"`: the backbone is frozen, its outputs are computed once and cached (in memory, and on
   disk with `cache_dir`), and only the decision head trains;
 - `"lora"`, `"qlora"` and `"full"`: adapters or whole layers of the backbone train along with the
   head. These run on a laptop GPU (Apple MPS) for small datasets; a CUDA GPU is recommended for
   full-size runs. `"qlora"` needs bitsandbytes and an NVIDIA GPU and falls back to `"lora"`
-  elsewhere, with a warning. It has trained in real 4-bit on a Colab GPU.
+  elsewhere, with a warning. It has trained, saved and reloaded in real 4-bit on a Colab GPU.
 
 `DecoderModel` (Qwen3) defaults to `"qlora"`. `EncoderModel` (ModernBERT) defaults to `"full"`:
 adapters barely moved ModernBERT, while full tuning reached 0.79 test accuracy on typed-decisions.
