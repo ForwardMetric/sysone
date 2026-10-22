@@ -15,7 +15,7 @@ jobs:
         include:
           # the newest versions of every dependency
           - name: newest dependencies
-            python: "3.12"
+            python: "3.13"
             resolution: highest
           # the minimums declared in pyproject.toml, on the oldest supported Python
           - name: minimum dependencies
