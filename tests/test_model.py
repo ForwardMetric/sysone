@@ -97,7 +97,9 @@ def test_model_classes_show_every_parameter(klass):
     assert list(signature.parameters) == list(inspect.signature(SystemOneModel).parameters)
     assert {name: p.default for name, p in signature.parameters.items()} == defaults
     for name in defaults:
-        assert "\n    %s : " % name in klass.__doc__, name
+        assert "\n%s : " % name in klass.__doc__, name
+    doc = klass.__doc__
+    assert doc.index("\nParameters\n") < doc.index("\nAttributes\n") < doc.index("\nExamples\n")
 
 
 @pytest.mark.parametrize("params, error, message", [

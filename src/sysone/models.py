@@ -68,10 +68,12 @@ def _document_parameters(cls: type[SystemOneModel]) -> None:
             params.append(p.replace(default=defaults[name]))
     cls.__init__.__signature__ = inspect.Signature(params)
     if cls.__doc__ and SystemOneModel.__doc__:
-        shared = SystemOneModel.__doc__[SystemOneModel.__doc__.index("    Parameters\n"):
-                                        SystemOneModel.__doc__.index("    See Also\n")]
-        examples = cls.__doc__.index("    Examples\n")
-        cls.__doc__ = cls.__doc__[:examples] + shared + cls.__doc__[examples:]
+        # Python 3.13+ strips docstring indentation at compile time and older versions don't, so
+        # both docstrings are dedented first and the sections are found at the start of a line.
+        base_doc, own = inspect.cleandoc(SystemOneModel.__doc__), inspect.cleandoc(cls.__doc__)
+        shared = base_doc[base_doc.index("\nParameters\n") + 1:base_doc.index("\nSee Also\n") + 1]
+        examples = own.index("\nExamples\n") + 1
+        cls.__doc__ = own[:examples] + shared + own[examples:]
 
 
 _document_parameters(EncoderModel)

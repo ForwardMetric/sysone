@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2
+
+- Fix: `import sysone` failed on Python 3.13 and newer (including Google Colab) in 0.3.1. Python
+  3.13 strips docstring indentation, which the code that adds the shared parameter docs to
+  `EncoderModel` and `DecoderModel` didn't expect. CI now tests the newest dependencies on
+  Python 3.13.
+
 ## 0.3.1
 
 Documentation release; no change in behaviour.
