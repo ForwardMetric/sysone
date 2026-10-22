@@ -638,8 +638,9 @@ checkpoint format.
 `ordinal_weight` names what it controls rather than the method, so the method can change without a
 rename. Its default, 1.0, weights the two terms equally. Equal weight is not equal influence:
 cross-entropy on score questions is typically around 1, while RPS, a squared gap between
-probabilities, is typically 0.05 to 0.2, so cross-entropy still dominates at 1.0. The default is
-to be confirmed by measurement (score error and exact-level accuracy at 0, 0.5, 1 and 2).
+probabilities, is typically 0.05 to 0.2, so cross-entropy still dominates at 1.0. Measured on
+typed-decisions (see milestone 3), the term helps a frozen backbone and is neutral with full
+tuning, so the default stays at 1.0.
 
 One weight applies to every score question in the data. That suits most datasets, because RPS is
 on the same 0-to-1 scale for any number of levels, so a 4-level weather scale and a 10-level spam
@@ -854,7 +855,7 @@ applies.
 the two architectures, the compact head, the in-memory feature cache, `fit` / `predict` /
 `save` / `load`, `evaluate` / `baselines` / `compare`, and three example notebooks.
 
-### Milestone 2: training the backbone
+### Milestone 2: training the backbone (done, 0.2.0)
 
 **Goal:** let the backbone learn, not only the head, and make long runs manageable: stopping
 when good enough, resuming where a run left off, and not repeating the backbone pass for
@@ -889,7 +890,7 @@ barely moved ModernBERT; see `tuning`).
 questions (best measured once backbone training is in, so the two effects aren't mixed), and
 calibration.
 
-### Milestone 3: better scores, calibrated probabilities, sturdier long runs
+### Milestone 3: better scores, calibrated probabilities, sturdier long runs (done, 0.3.0)
 
 **Goal:** close the largest measured accuracy gap (score questions), make the reported
 probabilities mean what they say, and make long GPU runs survive disconnects and older GPUs.
@@ -929,6 +930,31 @@ Release as 0.3.0.
 before and after calibration, the 0.79 result holds across seeds, and 0.3.0 is on PyPI with the
 notebooks installing `sysone>=0.3`.
 
+**Measured** (ModernBERT-base on typed-decisions, Colab L4, one seed;
+`examples/encoder_typed_decisions_ordinal_weight.ipynb`):
+
+| run | accuracy | score accuracy | score error | minutes |
+|---|---|---|---|---|
+| head, `ordinal_weight=0` | — | 0.4262 | 0.5686 | — |
+| head, `ordinal_weight=2` | — | 0.4388 | 0.5255 | — |
+| full, `ordinal_weight=0` | 0.7865 | 0.7662 | 0.2253 | 20.9 |
+| full, `ordinal_weight=2` | 0.7870 | 0.7700 | 0.2240 | 21.0 |
+
+- `ordinal_weight`: with the backbone frozen, 2 lowers score error by 7.6% and 0.5 and 1 change
+  nothing; with full tuning, 2 changes score error by 0.6% and accuracy not at all. The default
+  stays at 1.0. Per score question the full-tuning changes go both ways (−17% to +11%), within
+  one-seed noise, so per-question weights are not needed. Soft labels from several raters already
+  carry most of the order information once the backbone trains.
+- The 0.79 result held in both full-tuning runs above (same seed).
+- `"qlora"` trained, saved and reloaded in real 4-bit (NF4 projections, fp32 adapters, the
+  ModernBERT-base backbone at 130 MB) with identical predictions.
+- fp16 with loss scaling trained, saved and reloaded on a CUDA GPU with identical predictions;
+  the CUDA-only tests pass, including real 4-bit loading.
+
+**Moved to milestone 4:** the other seeds of fully tuned ModernBERT; the learning-rate defaults
+for ModernBERT adapters and Qwen3 full tuning; gradient checkpointing's cost on a GPU;
+`ordinal_weight` on bev-decision; a CI job on a GPU.
+
 **Not in milestone 3:** per-question `ordinal_weight` (unless the measurements call for it);
 per-category temperatures; reading the encoder summary as an average
 instead of `[CLS]` (full tuning already works for ModernBERT); more base models (Llama, Mistral);
@@ -937,9 +963,6 @@ training one model on many decision datasets before specialising; publishing fro
 
 ## Open items
 
-- `"qlora"` has trained and evaluated in real 4-bit on a Colab NVIDIA GPU (Qwen3-0.6B on
-  typed-decisions). Saving and reloading a 4-bit model has only been tested through the fallback;
-  it still needs a run on an NVIDIA GPU.
 - Whether bitsandbytes supports 4-bit training on Apple Silicon yet needs checking. If it does,
   the fallback there can be dropped.
 - A state-first causal layout, which would let one state's cache be shared across its questions,
