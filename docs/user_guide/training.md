@@ -13,9 +13,23 @@ budgets, the head's size and how many examples fit in memory at once, is worked 
 | reads text | in both directions | left to right |
 | choose it for | the best measured accuracy so far (0.79 on typed-decisions, fully tuned) | fine-tuning in little GPU memory, or a larger base model |
 
-Both take the same parameters, and both can use other base models of the same family, such as
-`DecoderModel("Qwen/Qwen3-1.7B")`. To use another family, see
-[Adding a base model](architectures.md).
+Both take the same parameters. `EncoderModel` also runs EuroBERT and mmBERT, and
+`DecoderModel` runs Llama, Mistral and Gemma 3, as well as other sizes of each family, such as
+`DecoderModel("Qwen/Qwen3-1.7B")`; see [Base models](architectures.md) for the list.
+
+If you don't know or don't mind which kind a base model is, {func}`~sysone.Model` picks the
+class for you:
+
+```python
+from sysone import Model
+
+model = Model("HuggingFaceTB/SmolLM2-1.7B")   # a DecoderModel, with DecoderModel's defaults
+model = Model("EuroBERT/EuroBERT-210m")       # an EncoderModel
+model = Model.load("my-model")                # a saved model of either kind
+```
+
+Using the wrong class, such as `EncoderModel("Qwen/Qwen3-0.6B")`, raises an error naming the
+right one: each class's defaults are chosen for its kind of model.
 
 ## How much of the model learns: `tuning`
 

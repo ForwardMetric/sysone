@@ -64,7 +64,8 @@ def test_num_layers_cuts_layers_and_layer_types(tiny_models, num_layers, expecte
     for path in tiny_models.values():
         model = architecture_for(path).load(path, num_layers, torch.float32)
         assert len(model.layers) == expected == model.config.num_hidden_layers
-        assert len(model.config.layer_types) == expected
+        if getattr(model.config, "layer_types", None):
+            assert len(model.config.layer_types) == expected
         assert model.sysone_total_layers == 4
 
 
@@ -86,3 +87,52 @@ def test_qwen_reads_last_content_token(tiny_models):
     for pos in encoded.read_positions:
         assert encoded.input_ids[pos + 1: pos + 1 + len(closing)] == closing
     assert encoded.summary_position == len(encoded.input_ids) - 1
+
+
+@pytest.mark.parametrize("family, starts_with_bos", [("qwen3", False), ("llama", True), ("mistral", True),
+                                                      ("gemma3_text", True)])
+def test_decoders_start_with_bos_where_pretrained_with_it(tiny_models, family, starts_with_bos):
+    arch, tok, model, encoder = _setup(tiny_models[family])
+    encoded = encoder.encode(STATE, QUESTION)
+    assert (encoded.input_ids[0] == tok.bos_token_id) is starts_with_bos
+    assert encoded.summary_position == len(encoded.input_ids) - 1
+
+
+def test_decoder_without_pad_token_pads_with_eos(tiny_models):
+    arch = architecture_for(tiny_models["llama"])
+    tok = AutoTokenizer.from_pretrained(tiny_models["llama"])
+    tok.pad_token = None
+    arch.check_tokenizer(tok)
+    assert tok.pad_token_id == tok.eos_token_id
+
+
+def test_eurobert_layout_uses_its_own_tokens(tiny_models):
+    arch, tok, model, encoder = _setup(tiny_models["eurobert"])
+    encoded = encoder.encode(STATE, QUESTION)
+    assert encoded.input_ids[0] == tok.bos_token_id == encoded.input_ids[encoded.summary_position]
+    assert all(encoded.input_ids[pos] == tok.mask_token_id for pos in encoded.read_positions)
+
+
+@pytest.mark.parametrize("family", ["llama", "mistral", "eurobert"])
+def test_single_mask_families_get_one_4d_mask(tiny_models, family):
+    arch, tok, model, encoder = _setup(tiny_models[family])
+    batch = collate([encoder.encode(STATE, QUESTION)], tok.pad_token_id)
+    mask = arch.attention(model, batch["real"], batch["position_ids"], batch["option_ids"])
+    assert isinstance(mask, torch.Tensor) and mask.dim() == 4
+
+
+def test_mistral_sliding_window_limits_attention(tiny_models):
+    arch, tok, model, encoder = _setup(tiny_models["mistral"])
+    batch = collate([encoder.encode(STATE * 4, QUESTION)], tok.pad_token_id)
+    windowed = arch.attention(model, batch["real"], batch["position_ids"], batch["option_ids"])
+    model.config.sliding_window = None
+    full = arch.attention(model, batch["real"], batch["position_ids"], batch["option_ids"])
+    assert windowed.sum() < full.sum()
+
+
+def test_gemma_has_sliding_and_global_masks(tiny_models):
+    arch, tok, model, encoder = _setup(tiny_models["gemma3_text"])
+    batch = collate([encoder.encode(STATE * 4, QUESTION)], tok.pad_token_id)
+    masks = arch.attention(model, batch["real"], batch["position_ids"], batch["option_ids"])
+    assert set(masks) == {"full_attention", "sliding_attention"}
+    assert masks["sliding_attention"].sum() < masks["full_attention"].sum()

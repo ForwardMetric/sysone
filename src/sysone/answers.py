@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from numbers import Real
 
 from .questions import Question
 
@@ -29,10 +30,43 @@ def score_confidence(p: Sequence[float]) -> float:
     return max(0.0, 1.0 - spread / uniform_spread)
 
 
-def answer(question: Question, p: Sequence[float]) -> dict:
-    """One answer dict for `question` from its option probabilities (in option order)."""
+def check_abstain(abstain) -> None:
+    """Raise ValueError unless `abstain` is None, a threshold, or a dict of thresholds (or None, or
+    the dicts `abstention_threshold` returns) keyed by question id or type."""
+    values = abstain.values() if isinstance(abstain, Mapping) else [abstain]
+    for value in values:
+        if isinstance(value, Mapping):
+            value = value.get("threshold")
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, Real) or not 0 <= value <= 1:
+            raise ValueError("abstain thresholds must be numbers from 0 to 1 (or None), got %r" % (value,))
+
+
+def threshold_for(abstain, qid: str, qtype: str) -> float | None:
+    """The abstention threshold for one question: `abstain` itself, or its entry for the question
+    id, else for the question type. None means always answer."""
+    if isinstance(abstain, Mapping):
+        value = abstain[qid] if qid in abstain else abstain.get(qtype)
+    else:
+        value = abstain
+    if isinstance(value, Mapping):
+        value = value.get("threshold")
+    return None if value is None else float(value)
+
+
+def answer(question: Question, p: Sequence[float], threshold: float | None = None) -> dict:
+    """One answer dict for `question` from its option probabilities (in option order). With a
+    `threshold`, the answer also says whether it is `abstained`: its top probability is below it."""
     p = [float(v) for v in p]
     top = max(p)
+    out = _answer(question, p, top)
+    if threshold is not None:
+        out["abstained"] = top < threshold
+    return out
+
+
+def _answer(question: Question, p: list[float], top: float) -> dict:
     if question.type == "choice":
         return {
             "type": "choice",

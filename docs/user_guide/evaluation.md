@@ -25,6 +25,7 @@ question's options, and the metrics compare the predicted distribution with it.
 | `ece` | expected calibration error of the top option: how far "says X% sure" is from "right X% of the time" | lower |
 | `score_error` | score questions: the gap between predicted and true expected level, in levels | lower |
 | `auc` | yes/no questions: how well P(yes) ranks yes above no; 0.5 is chance | higher |
+| `coverage` | with `abstain`: the share of questions answered (see [below](#choosing-abstention-thresholds)) | higher |
 
 ## Comparing with baselines
 
@@ -72,6 +73,32 @@ results = {"calibrated": model.evaluate(test_rows),
            "raw": model.evaluate(test_rows, calibrated=False)}
 compare(results, by="overall")[["accuracy", "log_loss", "brier", "ece"]]
 ```
+
+## Choosing abstention thresholds
+
+{meth}`~sysone.SystemOneModel.abstention_threshold` finds, per question type, the lowest
+threshold on `answer_confidence` at which the answered questions reach a target accuracy, so
+the model answers as much as it can at that accuracy:
+
+```python
+thresholds = model.abstention_threshold(held_out_rows, target_accuracy=0.95)
+thresholds["choice"]   # {"threshold": 0.71, "coverage": 0.64, "accuracy": 0.953, "n": 400}
+
+model.predict(text, questions, abstain=thresholds)
+report = model.evaluate(test_rows, abstain=thresholds)
+report["overall"]      # {"n": ..., "coverage": 0.66, "accuracy": 0.95, ...}
+```
+
+- **coverage** is the share of questions answered; the metrics count only those, and
+  {func}`~sysone.compare` shows coverage as a column.
+- Use rows the model was neither trained on nor calibrated on (`fit` calibrates on its own
+  validation slice, which it holds back from training). A threshold chosen on training data
+  promises more accuracy than the model delivers.
+- A type with fewer than 50 questions (`min_answers`) gets None instead of a threshold fitted
+  to noise, and a type whose most confident answers still miss the target gets
+  `"threshold": None`.
+- Check the threshold on a second held-out set, as above with `evaluate(test_rows, ...)`: the
+  accuracy there is what to expect in use.
 
 ## The training report
 

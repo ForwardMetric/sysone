@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.0 (unreleased)
+
+More base models, a class picker, and abstention.
+
+- **Four more model families**: Llama, Mistral and Gemma 3 (text) with `DecoderModel`, and
+  EuroBERT with `EncoderModel`. mmBERT, a multilingual ModernBERT, already worked and is now
+  listed. See [Base models](user_guide/architectures.md).
+- **`sysone.Model`** picks `EncoderModel` or `DecoderModel` from the base model, with that
+  class's defaults; `Model.load` loads either.
+- **Wrong class, clear error**: an encoder in `DecoderModel`, or a decoder in `EncoderModel`,
+  now raises a `ValueError` naming the right class, instead of training with defaults meant for
+  the other kind.
+- **Abstention**: `predict(..., abstain=t)` marks answers whose `answer_confidence` is below `t`
+  as `"abstained": True`; `evaluate(..., abstain=t)` adds `coverage` and scores only the answers
+  given; `abstention_threshold(rows, target_accuracy=...)` picks thresholds per question type
+  on held-out data. See [Abstaining](user_guide/predictions.md#abstaining).
+- `save` now says it saved the model when it leaves out a large training state, instead of
+  "training state not saved".
+- The load log names the weight format for `tuning="qlora"` (for example "4-bit nf4 weights,
+  bfloat16 compute").
+- Minimum transformers version raised to 5.3, the first with EuroBERT.
+- A rewritten README with a quickstart on the typed-decisions customer-service data.
+
 ## 0.3.2
 
 - Fix: `import sysone` failed on Python 3.13 and newer (including Google Colab) in 0.3.1. Python

@@ -30,15 +30,17 @@ class ModernBertArchitecture(Architecture):
         # property doesn't expose the half-window, so it is worked out here the same way.
         return int(model.config.local_attention) // 2
 
+    #: The tokenizer attributes for the summary token, the separator and the option marker.
+    special_tokens = ("cls_token_id", "sep_token_id", "mask_token_id")
+
     def check_tokenizer(self, tokenizer) -> None:
         super().check_tokenizer(tokenizer)
-        missing = [name for name in ("cls_token_id", "sep_token_id", "mask_token_id")
-                   if getattr(tokenizer, name) is None]
+        missing = [name for name in self.special_tokens if getattr(tokenizer, name) is None]
         if missing:
             raise ValueError("the tokenizer has no %s" % ", ".join(missing))
 
     def pieces(self, tokenizer, head, state, options) -> Pieces:
-        cls, sep, mask = tokenizer.cls_token_id, tokenizer.sep_token_id, tokenizer.mask_token_id
+        cls, sep, mask = (getattr(tokenizer, name) for name in self.special_tokens)
         return Pieces(
             prefix=[cls, *head, sep],
             options=[[mask, *option] for option in options],

@@ -153,13 +153,21 @@ Labels can be one right answer, or a probability per option when several raters 
 
 ## Models
 
-| class | base model | default training |
+| class | base models | default training |
 |---|---|---|
-| `EncoderModel` | [ModernBERT](https://huggingface.co/answerdotai/ModernBERT-base) (encoder) | every layer |
-| `DecoderModel` | [Qwen3](https://huggingface.co/Qwen/Qwen3-0.6B) (decoder) | QLoRA adapters |
+| `EncoderModel` | [ModernBERT](https://huggingface.co/answerdotai/ModernBERT-base) (default), [EuroBERT](https://huggingface.co/EuroBERT/EuroBERT-210m), [mmBERT](https://huggingface.co/jhu-clsp/mmBERT-base) | every layer |
+| `DecoderModel` | [Qwen3](https://huggingface.co/Qwen/Qwen3-0.6B) (default), Llama, Mistral, Gemma 3 | QLoRA adapters |
 
-Both accept other sizes of the same family, such as `DecoderModel("Qwen/Qwen3-1.7B")`. Support
-for more model families is coming; until then, a new family can be added with one
+Pass any checkpoint of these families by name, such as `DecoderModel("Qwen/Qwen3-1.7B")`. If you
+don't know whether a model is an encoder or a decoder, `Model` picks the class for you:
+
+```python
+from sysone import Model
+
+model = Model("EuroBERT/EuroBERT-210m")   # an EncoderModel, with its defaults
+```
+
+More families are coming; a new one can also be added with one
 [architecture class](https://sysone.readthedocs.io/en/latest/user_guide/architectures.html).
 
 ## When you need more control

@@ -5,9 +5,9 @@ typed questions about a piece of text in a single forward pass. A user picks a b
 `fit` on labelled rows and `predict` on new ones. They never write tokenization, position ids,
 attention masks, layer freezing, adapters, training loops or calibration code.
 
-The first two supported base models are **ModernBERT** (bidirectional encoder) and **Qwen3**
-(causal decoder). Other base models are added by writing one architecture class (see
-[Architectures](#architectures)).
+Supported base models are **ModernBERT** and **EuroBERT** (bidirectional encoders) and
+**Qwen3**, **Llama**, **Mistral** and **Gemma 3** (causal decoders). Other base models are added
+by writing one architecture class (see [Architectures](#architectures)).
 
 ## Public API
 
@@ -835,7 +835,8 @@ docs/
 ```
 
 Dependencies are torch (2.8 or later: training the backbone on Apple GPUs fails in earlier
-versions), transformers (5.1 or later: 5.0's ModernBERT ignores per-layer-type masks) and peft. The
+versions), transformers (5.3 or later: 5.0's ModernBERT ignores per-layer-type masks, and EuroBERT
+arrived in 5.3) and peft. The
 minimums in `pyproject.toml` are the ones CI tests, by installing the lowest allowed versions. Because QLoRA is the default, bitsandbytes is
 also a regular dependency on platforms where it supports 4-bit training, selected with a
 platform marker in `pyproject.toml`. Elsewhere it is not installed and the fallback to `"lora"`
@@ -999,17 +1000,26 @@ Release as 0.4.0.
    | Gemma 3 | `gemma3_text` | `DecoderModel` | `google/gemma-3-1b-pt` (gated) |
    | EuroBERT | `eurobert` | `EncoderModel` | `EuroBERT/EuroBERT-210m` |
 
-   - The decoders follow the Qwen3 layout: options read at their last token, the summary at the
-     final token. Gemma 3 mixes sliding-window and global layers; the attention masks are
-     already keyed by layer type, so this needs no new mechanism.
-   - EuroBERT ships its model code on the Hub, so loading it needs a new
-     `trust_remote_code=False` parameter, which the user must set to `True` knowingly. It is
-     saved with the model and required again on `load`.
-   - `learning_rates` for the new families start from their family's published fine-tuning
-     values and are marked "not yet measured" in the table under Training.
+   - The decoders share the Qwen3 layout (`DecoderArchitecture`): options read at their last
+     token, the summary at the final token. Llama, Mistral and Gemma 3 were pretrained with a
+     beginning-of-sequence token, so their sequences start with it (`add_bos`); Qwen3 has none.
+     A tokenizer without a pad token (Llama, Mistral) pads with its end-of-sequence token, which
+     is safe because padded positions are masked out.
+   - Masks: Qwen3 and Gemma 3 take masks keyed by layer type, which covers Gemma 3's mix of
+     sliding-window and global layers. Llama, Mistral and EuroBERT build their masks from a
+     single tensor and pass a 4D one through unchanged, so their architectures return one mask
+     (with Mistral's `sliding_window`, where a checkpoint sets it).
+   - Gemma 3: only the text models (`gemma3_text`, the 1B sizes). The 4B and larger checkpoints
+     wrap the text model with a vision tower under the `gemma3` type and are not handled.
+   - EuroBERT shares ModernBERT's encoder layout with its own tokens (`<|begin_of_text|>`,
+     `<|end_of_text|>`, `<|mask|>`). Its Hub repo ships model code for transformers 4.x that
+     fails on 5.x, but transformers has shipped EuroBERT natively since 5.3, which is used
+     instead: no `trust_remote_code`. The transformers minimum rises to 5.3.
+   - `learning_rates` for the new families start from the closest measured family (Qwen3 for
+     the decoders, ModernBERT for EuroBERT) and are not yet measured.
    - Default checkpoints stay ModernBERT-base and Qwen3-0.6B.
    - mmBERT (`jhu-clsp/mmBERT-base`), a multilingual ModernBERT, already loads through the
-     ModernBERT architecture; it gets a test and a line in the docs.
+     ModernBERT architecture; the docs list it.
 2. **Abstention.** `predict(..., abstain=t)` marks an answer whose `answer_confidence` is below
    `t` with `"abstained": true`. The answer and its probabilities are still returned, so the
    response keeps the System One shape and a caller can still log them. `t` is a float, or a

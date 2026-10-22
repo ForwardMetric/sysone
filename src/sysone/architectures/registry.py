@@ -5,6 +5,9 @@ from __future__ import annotations
 import importlib
 
 from .base import Architecture
+from .eurobert import EuroBertArchitecture
+from .gemma import GemmaArchitecture
+from .llama import LlamaArchitecture, MistralArchitecture
 from .modernbert import ModernBertArchitecture
 from .qwen import QwenArchitecture
 
@@ -72,4 +75,8 @@ def architecture_from_spec(spec: str) -> Architecture:
 
 
 register_architecture("modernbert", ModernBertArchitecture)
+register_architecture("eurobert", EuroBertArchitecture)
 register_architecture("qwen3", QwenArchitecture)
+register_architecture("llama", LlamaArchitecture)
+register_architecture("mistral", MistralArchitecture)
+register_architecture("gemma3_text", GemmaArchitecture)

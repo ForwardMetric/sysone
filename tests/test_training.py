@@ -8,14 +8,14 @@ import torch
 from sysone import DecoderModel, EncoderModel
 from sysone.training import Network
 
-from .conftest import make_rows
+from .conftest import ENCODERS, make_rows
 
 FAST = dict(epochs=4, batch_size=8, precision="fp32", device="cpu", verbose=0, num_layers="all",
             backbone_lr=1e-2, early_stopping=False)
 
 
 def _model(kind, path, **params):
-    klass = EncoderModel if kind == "modernbert" else DecoderModel
+    klass = EncoderModel if kind in ENCODERS else DecoderModel
     return klass(path, **{**FAST, **params})
 
 

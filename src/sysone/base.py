@@ -20,7 +20,7 @@ from typing import Any
 import torch
 
 from ._util import format_bytes, resolve_count, resolve_device, resolve_dtype
-from .answers import answer
+from .answers import answer, check_abstain, threshold_for
 from .architectures.base import Architecture
 from .architectures.registry import architecture_for, architecture_from_spec, architecture_spec
 from .cache import FeatureCache, question_key
@@ -38,7 +38,7 @@ from .checkpoint import (
 )
 from .data import Example, examples_from
 from .encoding import Encoder, measure_limits
-from .evaluation import score
+from .evaluation import score, scored_items, thresholds_for_accuracy
 from .features import cache_bytes, collate_features, extract
 from .heads import CompactHead
 from .layout import LAYOUTS, Encoded
@@ -111,8 +111,9 @@ class NotFittedError(RuntimeError):
 class SystemOneModel:
     """Fine-tune and calibrate a system-one decision model.
 
-    Use :class:`~sysone.EncoderModel` (ModernBERT) or :class:`~sysone.DecoderModel` (Qwen3); this
-    is their shared base class. Both take every parameter below and differ only in the defaults of
+    Use :class:`~sysone.EncoderModel` (ModernBERT by default) or :class:`~sysone.DecoderModel`
+    (Qwen3 by default), or :func:`~sysone.Model` to pick between them; this is their shared base
+    class. Both take every parameter below and differ only in the defaults of
     ``model_name``, ``num_layers`` and ``tuning``.
 
     As in scikit-learn, ``__init__`` only stores the parameters, so :meth:`get_params` and
@@ -311,6 +312,9 @@ class SystemOneModel:
     DecoderModel : The model class for causal decoders such as Qwen3.
     baselines : Simple guessers to compare a model against.
     """
+
+    #: True for decoder classes, False for encoder classes, None to accept either.
+    _causal: bool | None = None
 
     def __init__(
         self,
@@ -623,6 +627,16 @@ class SystemOneModel:
             return [] if self.layout == "parallel" else ["choice"]
         return list(self.shuffle_options or [])
 
+    def _check_architecture_kind(self, arch: Architecture) -> None:
+        """EncoderModel's defaults are wrong for a decoder and the other way round, so a base
+        model of the other kind is refused before anything is downloaded."""
+        if self._causal is None or arch.causal == self._causal:
+            return
+        kind, other = ("a decoder", "DecoderModel") if arch.causal else ("an encoder", "EncoderModel")
+        raise ValueError("%s is %s (%s), but %s is for %s; use %s, or sysone.Model to pick the class "
+                         "from the base model" % (self.model_name, kind, arch.name(), type(self).__name__,
+                                                  "decoders" if self._causal else "encoders", other))
+
     def _load_backbone(self, num_layers, revision, tuning: str) -> None:
         """Load the tokenizer and the backbone (in 4-bit or 8-bit for tuning="qlora")."""
         from transformers import AutoTokenizer
@@ -632,6 +646,7 @@ class SystemOneModel:
         self.tuning_ = tuning
         self.architecture_ = self.architecture if self.architecture is not None else \
             architecture_for(self.model_name, revision=revision)
+        self._check_architecture_kind(self.architecture_)
         self.tokenizer_ = AutoTokenizer.from_pretrained(self.model_name, revision=revision)
         self.architecture_.check_tokenizer(self.tokenizer_)
         quantization = None
@@ -682,11 +697,16 @@ class SystemOneModel:
             "%d fully trained layers" % plan.n_full if plan.n_full else "",
             "adapters on %d layers" % plan.n_lora if plan.n_lora else "",
             "embeddings" if plan.train_embeddings else "") if part)
+        weights = str(self.dtype_).replace("torch.", "")
+        if self.tuning_ == "qlora":  # frozen weights are stored quantized; compute runs in half precision
+            compute = "bfloat16" if self.dtype_ == torch.float32 else weights
+            weights = "%d-bit %s weights, %s compute" % (self.quant_bits, self.quant_type, compute) \
+                if self.quant_bits == 4 else "8-bit weights, %s compute" % compute
         self._log("loaded %s (%s, %d of %d layers, %s on %s); tuning=%s: %s; max_state_tokens=%d, "
                   "max_option_tokens=%d"
                   % (self.model_name, self.architecture_.name(), self.backbone_.config.num_hidden_layers,
-                     self.backbone_.sysone_total_layers, str(self.dtype_).replace("torch.", ""),
-                     self.device_, self.tuning_, trains, self.max_state_tokens_, self.max_option_tokens_))
+                     self.backbone_.sysone_total_layers, weights, self.device_, self.tuning_, trains,
+                     self.max_state_tokens_, self.max_option_tokens_))
 
     def _learning_rates(self) -> dict[str, float]:
         """Learning rate per parameter group. `backbone_lr="auto"` takes the architecture's defaults
@@ -1042,7 +1062,7 @@ class SystemOneModel:
                                  "predicting; an untrained decision head gives noise"
                                  % (type(self).__name__, type(self).__name__))
 
-    def predict(self, X, questions: Mapping | None = None):
+    def predict(self, X, questions: Mapping | None = None, abstain=None):
         """Answer typed questions about one or more states.
 
         Questions are given at prediction time, so a model can answer questions it wasn't
@@ -1065,6 +1085,13 @@ class SystemOneModel:
             ``"score"`` or ``"noul"``), ``instructions``, and for choice and score questions
             ``criteria``: the option labels (or ``{label: description}``), or the score levels
             from low to high.
+        abstain : float, dict or None, default=None
+            Abstention thresholds. An answer whose ``answer_confidence`` is below its threshold
+            is marked ``"abstained": True``; its answer and probabilities are still returned. A
+            float applies to every question; a dict is keyed by question id or question type
+            (``"choice"``, ``"score"``, ``"noul"``), an id taking precedence, and also accepts
+            what :meth:`abstention_threshold` returns. None never abstains and leaves
+            ``abstained`` out.
 
         Returns
         -------
@@ -1073,13 +1100,15 @@ class SystemOneModel:
             "output_tokens": 0}}``. An answer holds its ``type``, the answer itself (``choice``:
             the most probable label; ``score``: the expected level; ``noul``: the probability of
             yes), ``probabilities`` per option for choice and score questions, a ``confidence``
-            for choice and score questions, and ``answer_confidence``, the calibrated probability
-            of the top option.
+            for choice and score questions, ``answer_confidence``, the calibrated probability
+            of the top option, and with ``abstain``, ``abstained``.
 
         Raises
         ------
         NotFittedError
             If the model has neither been fit nor loaded.
+        ValueError
+            If an abstention threshold is not a number from 0 to 1.
 
         Examples
         --------
@@ -1089,6 +1118,7 @@ class SystemOneModel:
          'usage': {'input_tokens': 41, 'output_tokens': 0}}
         """
         self._check_fitted()
+        check_abstain(abstain)
         single = False
         if questions is not None:
             if isinstance(X, (str, Mapping)):
@@ -1103,11 +1133,12 @@ class SystemOneModel:
         probs, lengths = self._predict_examples(examples)
         for ex, n_tokens, p in zip(examples, lengths, probs):
             result = results[ex.row]
-            result["answers"][ex.qid] = answer(ex.question, p[: ex.question.k])
+            result["answers"][ex.qid] = answer(ex.question, p[: ex.question.k],
+                                               threshold_for(abstain, ex.qid, ex.question.type))
             result["usage"]["input_tokens"] += n_tokens
         return results[0] if single else results
 
-    def evaluate(self, data, questions: Mapping | None = None, calibrated: bool = True) -> dict:
+    def evaluate(self, data, questions: Mapping | None = None, calibrated: bool = True, abstain=None) -> dict:
         """Score the model on labelled data.
 
         Hard and soft labels are scored the same way: each label becomes a target distribution
@@ -1122,6 +1153,9 @@ class SystemOneModel:
         calibrated : bool, default=True
             Score the calibrated probabilities. False scores them before temperature scaling,
             to see what calibration changed; accuracy is the same either way.
+        abstain : float, dict or None, default=None
+            Abstention thresholds, as in :meth:`predict`. Abstained questions are left out of
+            every metric, and each group adds ``coverage``, the share of questions answered.
 
         Returns
         -------
@@ -1135,7 +1169,8 @@ class SystemOneModel:
             - ``brier``: squared distance to the label;
             - ``ece``: expected calibration error of the top option;
             - ``score_error`` (score questions): gap between predicted and true expected level;
-            - ``auc`` (yes/no questions): how well P(yes) ranks yes above no.
+            - ``auc`` (yes/no questions): how well P(yes) ranks yes above no;
+            - ``coverage`` (with ``abstain``): the share of questions answered.
 
             Pass several reports to :func:`~sysone.compare` to see them side by side.
 
@@ -1143,11 +1178,68 @@ class SystemOneModel:
         ------
         NotFittedError
             If the model has neither been fit nor loaded.
+        ValueError
+            If an abstention threshold is not a number from 0 to 1.
         """
         self._check_fitted()
+        check_abstain(abstain)
         examples, skipped = examples_from(data, questions, labeled=True)
         probs, _ = self._predict_examples(examples, calibrated=calibrated)
-        return score(examples, probs, skipped)
+        thresholds = None if abstain is None else \
+            [threshold_for(abstain, ex.qid, ex.question.type) for ex in examples]
+        return score(examples, probs, skipped, thresholds)
+
+    def abstention_threshold(self, data, target_accuracy: float = 0.95, questions: Mapping | None = None,
+                             min_answers: int = 50) -> dict:
+        """Find, per question type, the lowest abstention threshold that reaches a target accuracy.
+
+        Answering only when ``answer_confidence`` is at or above the threshold, the questions
+        answered in ``data`` are right at least ``target_accuracy`` of the time, and as many are
+        answered as possible. Use labelled data the model was neither trained nor calibrated on,
+        such as a held-out split: on its own training data a model looks more accurate than it is.
+
+        Parameters
+        ----------
+        data : list of dict, DataFrame, datasets.Dataset, str or path
+            Held-out labelled data, in any form :meth:`fit` accepts.
+        target_accuracy : float, default=0.95
+            The accuracy to reach on the questions answered, from 0 to 1.
+        questions : dict or None, default=None
+            A question catalog, as in :meth:`fit`.
+        min_answers : int, default=50
+            Fewer questions of a type than this give None for that type, rather than a
+            threshold fitted to noise.
+
+        Returns
+        -------
+        dict
+            Per question type in ``data``, ``{"threshold", "coverage", "accuracy", "n"}``:
+            the threshold, the share of questions it answers and their accuracy, out of ``n``.
+            ``threshold`` is None when even the most confident answers miss the target, and the
+            whole entry is None below ``min_answers``. Pass the dict as ``abstain=`` to
+            :meth:`predict` or :meth:`evaluate`.
+
+        Raises
+        ------
+        NotFittedError
+            If the model has neither been fit nor loaded.
+        ValueError
+            If ``target_accuracy`` is not from 0 to 1.
+
+        Examples
+        --------
+        >>> thresholds = model.abstention_threshold(held_out_rows, target_accuracy=0.9)  # doctest: +SKIP
+        >>> thresholds["choice"]                                                      # doctest: +SKIP
+        {'threshold': 0.62, 'coverage': 0.71, 'accuracy': 0.903, 'n': 200}
+        >>> model.predict(text, questions, abstain=thresholds)                        # doctest: +SKIP
+        """
+        self._check_fitted()
+        if isinstance(target_accuracy, bool) or not isinstance(target_accuracy, Real) or \
+                not 0 <= target_accuracy <= 1:
+            raise ValueError("target_accuracy must be a number from 0 to 1, got %r" % (target_accuracy,))
+        examples, _ = examples_from(data, questions, labeled=True)
+        probs, _ = self._predict_examples(examples)
+        return thresholds_for_accuracy(scored_items(examples, probs), target_accuracy, min_answers)
 
     def _predict_examples(self, examples: list[Example],
                           calibrated: bool = True) -> tuple[list[list[float]], list[int]]:
@@ -1261,8 +1353,9 @@ class SystemOneModel:
             if training_state is True or size <= TRAINING_STATE_AUTO_BYTES:
                 save_training_state(state, path / STATE_DIR)
             else:
-                self._log("training state (%s) not saved: over 100 MB; use save(path, training_state=True) to "
-                          "include it so a later fit() resumes this run" % format_bytes(size))
+                self._log("saved the model to %s; left out the %s training state, which is only needed to "
+                          "resume training (save(path, training_state=True) includes it)"
+                          % (path, format_bytes(size)))
         return path
 
     @classmethod

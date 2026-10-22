@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 
+from .architectures.registry import architecture_for
 from .base import SystemOneModel
 
 
@@ -26,6 +27,8 @@ class EncoderModel(SystemOneModel):
     >>> model = EncoderModel(tuning="head")       # only the decision head: fast, less accurate
     >>> model.fit(rows).predict(state, questions)  # doctest: +SKIP
     """
+
+    _causal = False
 
     def __init__(self, model_name: str = "answerdotai/ModernBERT-base", *, num_layers="all", tuning="full",
                  **kwargs):
@@ -52,8 +55,59 @@ class DecoderModel(SystemOneModel):
     >>> model.fit(rows).predict(state, questions)  # doctest: +SKIP
     """
 
+    _causal = True
+
     def __init__(self, model_name: str = "Qwen/Qwen3-0.6B", *, num_layers=0.7, **kwargs):
         super().__init__(model_name, num_layers=num_layers, **kwargs)
+
+
+def Model(model_name: str | None = None, **params) -> SystemOneModel:  # noqa: N802 (reads as a class)
+    """Make an :class:`EncoderModel` or a :class:`DecoderModel`, whichever suits the base model.
+
+    Reads the base model's configuration (``config.json`` only, no weights) to see whether it is
+    an encoder or a decoder, and returns that class with its own defaults. Use it when you don't
+    know or don't mind which kind a base model is; the returned model is an ordinary
+    ``EncoderModel`` or ``DecoderModel``, so saving, loading and :meth:`~SystemOneModel.get_params`
+    work as usual.
+
+    Parameters
+    ----------
+    model_name : str or None, default=None
+        Hugging Face Hub id or local path of the base model. None gives ``EncoderModel()``, whose
+        default (fully tuned ModernBERT-base) is the best measured so far.
+    **params
+        Any parameter of :class:`SystemOneModel`, overriding the chosen class's defaults.
+        ``revision`` and ``architecture`` are also used to look up the kind of model.
+
+    Returns
+    -------
+    EncoderModel or DecoderModel
+        Not fitted yet.
+
+    Raises
+    ------
+    ValueError
+        If no architecture is registered for the base model's type.
+
+    See Also
+    --------
+    SystemOneModel.load : Load a saved model of either class (also available as ``Model.load``).
+
+    Examples
+    --------
+    >>> from sysone import Model
+    >>> model = Model("Qwen/Qwen3-0.6B")             # a DecoderModel  # doctest: +SKIP
+    >>> model = Model("EuroBERT/EuroBERT-210m")      # an EncoderModel  # doctest: +SKIP
+    >>> model = Model.load("my-model")               # either kind  # doctest: +SKIP
+    """
+    if model_name is None:
+        return EncoderModel(**params)
+    arch = params.get("architecture") or architecture_for(model_name, revision=params.get("revision"))
+    klass = DecoderModel if arch.causal else EncoderModel
+    return klass(model_name, **params)
+
+
+Model.load = SystemOneModel.load
 
 
 def _document_parameters(cls: type[SystemOneModel]) -> None:

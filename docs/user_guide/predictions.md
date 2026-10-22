@@ -65,6 +65,29 @@ There are two measures, for different uses:
 Calibration never changes which option is on top; see
 [Evaluation and calibration](evaluation.md).
 
+## Abstaining
+
+A model can say "not sure" instead of guessing: pass `abstain`, a threshold on
+`answer_confidence`, and each answer below it is marked `"abstained": True`. Send those to a
+person or a larger model, and act on the rest.
+
+```python
+model.predict(text, questions, abstain=0.8)
+# {"answers": {"team": {"type": "choice", "choice": "servicing", ..., "answer_confidence": 0.62,
+#                       "abstained": True}, ...}, ...}
+
+model.predict(text, questions, abstain={"choice": 0.8, "noul": 0.9})   # per question type
+model.predict(text, questions, abstain={"team": 0.7, "choice": 0.8})   # a question id wins over its type
+```
+
+An abstained answer still carries its choice and probabilities, so the result keeps the same
+shape and you can log what the model would have said. Without `abstain`, answers have no
+`abstained` field.
+
+Because `answer_confidence` is calibrated, a threshold means what it says: answers given with
+0.9 or more are right about 90% of the time or better. To choose thresholds for a target
+accuracy on your own data, see [Choosing abstention thresholds](evaluation.md#choosing-abstention-thresholds).
+
 ## Usage
 
 `usage.input_tokens` counts the tokens the model read for all of a state's questions;

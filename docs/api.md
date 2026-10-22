@@ -11,6 +11,7 @@ Everything below is importable from `sysone`.
    :toctree: generated
    :nosignatures:
 
+   Model
    EncoderModel
    DecoderModel
    SystemOneModel
@@ -18,7 +19,8 @@ Everything below is importable from `sysone`.
 ```
 
 {class}`EncoderModel` and {class}`DecoderModel` take the same parameters, listed on each page,
-and differ only in three defaults. {class}`SystemOneModel` is their shared base class.
+and differ only in three defaults. {func}`Model` returns whichever of the two suits a base model.
+{class}`SystemOneModel` is their shared base class.
 
 ## Evaluation
 
@@ -54,4 +56,4 @@ and differ only in three defaults. {class}`SystemOneModel` is their shared base 
    layout.Pieces
 ```
 
-See [Adding a base model](user_guide/architectures.md) for a walkthrough.
+See [Base models](user_guide/architectures.md) for a walkthrough.
