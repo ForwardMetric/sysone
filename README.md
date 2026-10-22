@@ -71,7 +71,7 @@ results["full-fine-tuning"] = model.evaluate(test)
 compare(results, by="overall")           # accuracy, log loss, Brier score, calibration error
 ```
 
-On a Colab GPU, this gave:
+On a L4 Colab GPU, this gave:
 
 ```text
                   accuracy  distance  log_loss     brier       ece
@@ -81,17 +81,41 @@ full-fine-tuning      0.73  0.305703  0.659549  0.360719  0.111332
 ```
 
 The fine-tuned model picks the right answer 73% of the time, against 35% for the average
-answer in the training data, and halves the log loss. Results vary a little with `seed`.
+answer in the training data, and halves the log loss. Results may vary a little with `seed`.
 
 ### 2. Predict and save
 
 ```python
-model.predict("I was charged twice for the same invoice. Please fix it.", questions)
-# {"answers": {"category": {"type": "choice", "choice": "billing",
-#                           "probabilities": {"account": ..., "billing": ..., ...}, ...},
-#              "action":   {...}}, ...}
+from pprint import pprint
 
-model.save("support-triage")             # reload with EncoderModel.load("support-triage")
+out = model.predict("I was charged twice for the same invoice. Please fix it.", questions)
+pprint(out)
+```
+
+```text
+{'answers': {'action': {'answer_confidence': 0.4786,
+                        'choice': 'escalate_to_human',
+                        'confidence': 0.3483,
+                        'probabilities': {'answer_directly': 0.2042,
+                                          'close_no_action': 0.0,
+                                          'escalate_to_human': 0.4786,
+                                          'execute_refund': 0.0296,
+                                          'request_information': 0.2876},
+                        'type': 'choice'},
+             'category': {'answer_confidence': 0.9963,
+                          'choice': 'billing',
+                          'confidence': 0.9954,
+                          'probabilities': {'account': 0.0034,
+                                            'billing': 0.9963,
+                                            'delivery': 0.0001,
+                                            'refund': 0.0,
+                                            'technical': 0.0001},
+                          'type': 'choice'}},
+ 'usage': {'input_tokens': 109, 'output_tokens': 0}}
+```
+
+```python
+model.save("sysone-support")             # reload with EncoderModel.load("sysone-support")
 ```
 
 Questions are plain dicts, and rows can come from lists of dicts, `.jsonl`, `.csv` or
