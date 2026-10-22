@@ -983,7 +983,7 @@ and how, without reading the source.
 **Not in scope:** behaviour changes; running the notebooks during the docs build (they download
 models and need a GPU).
 
-### Milestone 4: more base models, abstention (0.4.0)
+### Milestone 4: more base models, abstention, sharing (done, 0.4.0)
 
 **Goal:** let users pick the base model that suits their language, size and licence, without
 having to know whether it is an encoder or a decoder, and let a model say "not sure" instead of
@@ -1070,6 +1070,26 @@ Release as 0.4.0.
    - The load log names the weight format for `"qlora"` ("4-bit nf4"), not only the compute
      dtype.
    - The changelog records the README rewrite (merged after 0.3.2, unreleased).
+
+**Measured** (typed-decisions, all workflows, full tuning, one seed each, Colab L4;
+`examples/encoder_typed_decisions_larger_encoders.ipynb`; accuracy as the leaderboard scores it,
+where a tie in the gold label counts only its first option, which runs about one point below
+`evaluate`'s accuracy):
+
+| base model | `backbone_lr` | epochs (max) | accuracy | KL from gold | Brier | minutes |
+|---|---|---|---|---|---|---|
+| mmBERT-base | 5e-5 | 8 | 0.776 | 0.112 | 0.061 | 22 |
+| ModernBERT-large | 3e-5 | 8 | 0.788 | 0.092 | 0.050 | 49 |
+| Ettin-encoder-400m | 3e-5 | 10 | 0.8025 | – | 0.044 | 59 |
+
+- Ettin-encoder-400m, ModernBERT-large's shape with newer pretraining, is the best so far and
+  is published on the Hub with its predictions. More seeds are still to run.
+- The earlier ModernBERT-base 0.787 was `evaluate`'s accuracy; on the leaderboard's scoring it
+  is about 0.778.
+- Temperatures came out near 1 for every model, and validation ECE rose slightly after
+  calibration: against soft labels, a model matching the raters' spread is "right" (agrees with
+  their top answer) more often than its confidence says, so ECE stays near 0.15 whatever the
+  temperature. Temperature scaling minimises log loss, which it does.
 
 **Not in scope:** measuring accuracy and learning rates for the new families (a later testing
 pass); a GPU CI job; `head="full"`; `loss="rlcd"`; per-category temperatures; training on many

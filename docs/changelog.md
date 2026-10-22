@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0 (unreleased)
+## 0.4.0
 
 More base models, a class picker, and abstention.
 
@@ -27,6 +27,8 @@ More base models, a class picker, and abstention.
   bfloat16 compute").
 - Minimum transformers version raised to 5.3, the first with EuroBERT.
 - A rewritten README with a quickstart on the typed-decisions customer-service data.
+- A notebook that trains mmBERT-base, ModernBERT-large and Ettin-encoder-400m on typed-decisions
+  and scores them as its leaderboard does; Ettin-encoder-400m reached 0.8025.
 
 ## 0.3.2
 

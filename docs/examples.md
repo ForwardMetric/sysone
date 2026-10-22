@@ -13,7 +13,7 @@ it.
 | [Hard labels, Qwen3](examples/decoder_bev_decision.ipynb) · [Colab][c-dec-bev] | bev-decision-150K: 18 domains | `DecoderModel`, head and QLoRA | GPU recommended |
 | [Hard labels, ModernBERT](examples/encoder_bev_decision.ipynb) · [Colab][c-enc-bev] | bev-decision-150K | `EncoderModel`, head and full | GPU recommended |
 | [Measuring `ordinal_weight`](examples/encoder_typed_decisions_ordinal_weight.ipynb) · [Colab][c-ordinal] | typed-decisions | `EncoderModel` | about an hour on an L4 |
-| [Larger encoders](examples/encoder_typed_decisions_larger_encoders.ipynb) · [Colab][c-larger] | typed-decisions, scored as its leaderboard does | mmBERT-base and ModernBERT-large, full | about 1.5 hours on an L4 |
+| [Larger encoders](examples/encoder_typed_decisions_larger_encoders.ipynb) · [Colab][c-larger] | typed-decisions, scored as its leaderboard does | mmBERT-base, ModernBERT-large and Ettin-400m, full | about 2.5 hours on an L4 |
 
 [c-quickstart]: https://colab.research.google.com/github/ForwardMetric/sysone/blob/main/examples/quickstart.ipynb
 [c-dec-typed]: https://colab.research.google.com/github/ForwardMetric/sysone/blob/main/examples/decoder_typed_decisions.ipynb
