@@ -981,6 +981,72 @@ and how, without reading the source.
 **Not in scope:** behaviour changes; running the notebooks during the docs build (they download
 models and need a GPU).
 
+### Milestone 4: more base models, abstention (0.4.0)
+
+**Goal:** let users pick the base model that suits their language, size and licence, without
+having to know whether it is an encoder or a decoder, and let a model say "not sure" instead of
+guessing, which calibrated probabilities make trustworthy.
+Release as 0.4.0.
+
+**In scope:**
+1. **Four more model families**, each an `Architecture` subclass with tests on tiny
+   random-weight configs (no download, so gated checkpoints need no token in CI):
+
+   | family | `model_type` | model class | example checkpoints |
+   |---|---|---|---|
+   | Llama | `llama` | `DecoderModel` | `meta-llama/Llama-3.2-1B` (gated), `HuggingFaceTB/SmolLM2-1.7B` |
+   | Mistral | `mistral` | `DecoderModel` | `mistralai/Mistral-7B-v0.3`, `mistralai/Ministral-8B-Instruct-2410` |
+   | Gemma 3 | `gemma3_text` | `DecoderModel` | `google/gemma-3-1b-pt` (gated) |
+   | EuroBERT | `eurobert` | `EncoderModel` | `EuroBERT/EuroBERT-210m` |
+
+   - The decoders follow the Qwen3 layout: options read at their last token, the summary at the
+     final token. Gemma 3 mixes sliding-window and global layers; the attention masks are
+     already keyed by layer type, so this needs no new mechanism.
+   - EuroBERT ships its model code on the Hub, so loading it needs a new
+     `trust_remote_code=False` parameter, which the user must set to `True` knowingly. It is
+     saved with the model and required again on `load`.
+   - `learning_rates` for the new families start from their family's published fine-tuning
+     values and are marked "not yet measured" in the table under Training.
+   - Default checkpoints stay ModernBERT-base and Qwen3-0.6B.
+   - mmBERT (`jhu-clsp/mmBERT-base`), a multilingual ModernBERT, already loads through the
+     ModernBERT architecture; it gets a test and a line in the docs.
+2. **Abstention.** `predict(..., abstain=t)` marks an answer whose `answer_confidence` is below
+   `t` with `"abstained": true`. The answer and its probabilities are still returned, so the
+   response keeps the System One shape and a caller can still log them. `t` is a float, or a
+   dict keyed by question type or question name.
+   - `evaluate(..., abstain=t)` adds `coverage` (the share of answers given) and reports
+     accuracy and the other metrics over the answers given.
+   - `model.abstention_threshold(rows, target_accuracy=0.95)` returns, per question type, the
+     lowest threshold whose accuracy on `rows` (held-out labelled data) reaches the target,
+     with its coverage. With fewer than 50 answers of a type, it returns None for that type
+     instead of a threshold fitted to noise.
+   - A threshold is only as good as the calibration behind it, so the docs show choosing one on
+     data the model was not trained or calibrated on.
+3. **Picking the class for the user.** `sysone.Model(model_name, **params)` reads the base
+   model's config (`config.json` only, no weights), looks up its architecture and returns an
+   `EncoderModel` or a `DecoderModel` with that class's defaults; `params` override them as usual.
+   `Model()` with no name gives `EncoderModel()`, the best measured default. `Model.load(path)`
+   loads a saved model of either class (`SystemOneModel.load`). Users who know which they want
+   keep using the two classes directly.
+   - It is a factory, not a class: what it returns is a plain `EncoderModel` or `DecoderModel`,
+     so `get_params`, `clone` and saved models are unchanged. It is not named `AutoModel`, which
+     would clash with transformers' class of that name in the same notebook.
+   - **Mismatch check:** when the architecture is resolved (at `fit`, or at construction through
+     `Model`), `EncoderModel` with a causal architecture, or `DecoderModel` with a bidirectional
+     one, raises a `ValueError` naming the model, what it is, and the class to use instead (or
+     `sysone.Model`). This applies to an `architecture=` passed by hand as well.
+4. **Polish:**
+   - `save` reports what it saved before what it left out: "saved the model; left out the 1.3 GB
+     training state, which is only needed to resume training (training_state=True includes
+     it)".
+   - The load log names the weight format for `"qlora"` ("4-bit nf4"), not only the compute
+     dtype.
+   - The changelog records the README rewrite (merged after 0.3.2, unreleased).
+
+**Not in scope:** measuring accuracy and learning rates for the new families (a later testing
+pass); a GPU CI job; `head="full"`; `loss="rlcd"`; per-category temperatures; training on many
+datasets before specialising.
+
 ## Open items
 
 - Whether bitsandbytes supports 4-bit training on Apple Silicon yet needs checking. If it does,
