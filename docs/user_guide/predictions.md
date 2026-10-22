@@ -30,7 +30,8 @@ States longer than `max_state_tokens` (measured on the training data) keep their
                  "legend": {"0": "none", "1": "minor", "2": "major", "3": "critical"},
                  "probabilities": {"0": 0.1, "1": 0.62, "2": 0.24, "3": 0.04},
                  "confidence": 0.55, "answer_confidence": 0.62},
-    "refund":   {"type": "noul", "noul": 0.97, "answer_confidence": 0.97}},
+    "refund":   {"type": "noul", "noul": 0.97, "probabilities": {"false": 0.03, "true": 0.97},
+                 "answer_confidence": 0.97}},
  "usage": {"input_tokens": 118, "output_tokens": 0}}
 ```
 
@@ -39,7 +40,7 @@ Results are plain dicts, ready to serialise as JSON, in the response shape of th
 | field | choice | score | noul |
 |---|---|---|---|
 | the answer | `choice`: the most probable label | `score`: the expected level, `Σ level × p` | `noul`: the probability of yes |
-| `probabilities` | per label | per level index | |
+| `probabilities` | per label | per level index | `"false"` and `"true"` |
 | `legend` | | level index to its text | |
 | `confidence` | yes | yes | |
 | `answer_confidence` | yes | yes | yes |
@@ -64,6 +65,29 @@ There are two measures, for different uses:
 
 Calibration never changes which option is on top; see
 [Evaluation and calibration](evaluation.md).
+
+## Abstaining
+
+A model can say "not sure" instead of guessing: pass `abstain`, a threshold on
+`answer_confidence`, and each answer below it is marked `"abstained": True`. Send those to a
+person or a larger model, and act on the rest.
+
+```python
+model.predict(text, questions, abstain=0.8)
+# {"answers": {"team": {"type": "choice", "choice": "servicing", ..., "answer_confidence": 0.62,
+#                       "abstained": True}, ...}, ...}
+
+model.predict(text, questions, abstain={"choice": 0.8, "noul": 0.9})   # per question type
+model.predict(text, questions, abstain={"team": 0.7, "choice": 0.8})   # a question id wins over its type
+```
+
+An abstained answer still carries its choice and probabilities, so the result keeps the same
+shape and you can log what the model would have said. Without `abstain`, answers have no
+`abstained` field.
+
+Because `answer_confidence` is calibrated, a threshold means what it says: answers given with
+0.9 or more are right about 90% of the time or better. To choose thresholds for a target
+accuracy on your own data, see [Choosing abstention thresholds](evaluation.md#choosing-abstention-thresholds).
 
 ## Usage
 

@@ -36,23 +36,32 @@ and keep the folder small for sharing.
 
 ## Sharing on the Hugging Face Hub
 
-A saved folder can be uploaded as is, and loaded by repo id:
+{meth}`~sysone.SystemOneModel.push_to_hub` uploads a model with a model card, and anyone can
+load it by repo id:
 
 ```python
-from huggingface_hub import HfApi
-
-model.save("ticket-model", training_state=False)
-HfApi().upload_folder(folder_path="ticket-model", repo_id="your-org/ticket-model", repo_type="model")
+model.push_to_hub("your-org/ticket-model", private=True)   # log in first: hf auth login
 ```
 
 ```python
-from sysone import DecoderModel
+from sysone import SystemOneModel
 
-model = DecoderModel.load("your-org/ticket-model")
+model = SystemOneModel.load("your-org/ticket-model")
 ```
 
-`load` accepts a local folder or a Hub repo id. The base model is fetched from its own repo, so
-the people you share with need access to it too.
+- The upload leaves out the training state, so it holds only what predicting needs: a few
+  hundred KB for a head-only model, a few MB with adapters, or the trained layers of a fully
+  tuned model (about 300 MB for ModernBERT-base).
+- The model card (`README.md`) says how to install sysone and load the model, and records the
+  base model, how it was trained, its validation accuracy and its calibration. Pass
+  `license=` to add a license; check it is compatible with the base model's.
+- The base model is fetched from its own repo at the revision used for training, so the people
+  you share with need access to it too: a Llama or Gemma base model needs its licence accepted.
+- Loading needs a sysone version that knows the base model's family (0.4 or later for Llama,
+  Mistral, Gemma 3 and EuroBERT).
+
+A folder written by `save` can also be uploaded by hand, with `huggingface_hub`'s
+`upload_folder`; `load` reads a local folder or a Hub repo id.
 
 ## Autosave during training
 

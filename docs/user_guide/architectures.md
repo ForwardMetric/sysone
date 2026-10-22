@@ -1,16 +1,33 @@
-# Adding a base model
+# Base models
 
-sysone supports two families of base models out of the box:
+sysone supports these families of base models out of the box:
 
 | family | `model_type` | model class | examples |
 |---|---|---|---|
-| ModernBERT | `modernbert` | {class}`~sysone.EncoderModel` | `answerdotai/ModernBERT-base`, `answerdotai/ModernBERT-large` |
+| ModernBERT | `modernbert` | {class}`~sysone.EncoderModel` | `answerdotai/ModernBERT-base`, `answerdotai/ModernBERT-large`, `jhu-clsp/mmBERT-base` (multilingual) |
+| EuroBERT | `eurobert` | {class}`~sysone.EncoderModel` | `EuroBERT/EuroBERT-210m`, `EuroBERT/EuroBERT-610m` (multilingual) |
 | Qwen3 | `qwen3` | {class}`~sysone.DecoderModel` | `Qwen/Qwen3-0.6B`, `Qwen/Qwen3-1.7B` |
+| Llama | `llama` | {class}`~sysone.DecoderModel` | `meta-llama/Llama-3.2-1B`, `HuggingFaceTB/SmolLM2-1.7B` |
+| Mistral | `mistral` | {class}`~sysone.DecoderModel` | `mistralai/Mistral-7B-v0.3`, `mistralai/Ministral-8B-Instruct-2410` |
+| Gemma 3 | `gemma3_text` | {class}`~sysone.DecoderModel` | `google/gemma-3-1b-pt`, `google/gemma-3-1b-it` |
 
 Any checkpoint of a supported family works by name: `DecoderModel("Qwen/Qwen3-1.7B")`. The
-architecture is looked up from the checkpoint's `model_type`.
+architecture is looked up from the checkpoint's `model_type`, and {class}`~sysone.SystemOneModel` uses it
+to pick `EncoderModel` or `DecoderModel` for you.
 
-## Writing an architecture
+Some notes:
+
+- **Gated models.** Llama and Gemma checkpoints from Meta and Google need you to accept their
+  licence on Hugging Face and log in (`huggingface-cli login` or `HF_TOKEN`) before they
+  download.
+- **Gemma 3** is supported in its text-only sizes (1B). The 4B and larger checkpoints include a
+  vision tower and are not supported yet.
+- **Mistral** has no small checkpoint; at 7B and up, use `tuning="qlora"` (the
+  `DecoderModel` default) on a GPU with enough memory.
+- **Learning rates** for the newer families start from the closest measured family and have not
+  been measured on their own yet; set `backbone_lr` if training is slow or unstable.
+
+## Adding another family
 
 Another family is supported by one class: a subclass of {class}`~sysone.Architecture` that says
 how a question's tokens are arranged and where its vectors are read. Everything else (layer
@@ -44,6 +61,11 @@ class MyDecoderArchitecture(Architecture):
 register_architecture("mydecoder", MyDecoderArchitecture)
 model = DecoderModel("my-org/my-decoder-1b")
 ```
+
+A decoder whose layers, attention and tokenizer resemble Qwen3's or Llama's can usually reuse
+their layout by subclassing `sysone.architectures.DecoderArchitecture` (set `add_bos = True` if
+the model was pretrained with a beginning-of-sequence token) and setting only `model_types`,
+`lora_targets` and `learning_rates`.
 
 Points to get right:
 

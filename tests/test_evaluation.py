@@ -4,7 +4,7 @@ import pytest
 
 from sysone import baselines, compare
 from sysone.data import examples_from
-from sysone.evaluation import score
+from sysone.evaluation import score, scored_items, thresholds_for_accuracy
 
 from .conftest import QUESTIONS
 
@@ -79,3 +79,60 @@ def test_unlabeled_questions_are_reported_as_skipped():
     examples, skipped = examples_from(rows)
     report = score(examples, [[1, 0, 0]], skipped)
     assert report["skipped"] == {"unlabeled": 2} and report["n_questions"] == 1
+
+
+PROBS = [[0.7, 0.2, 0.1], [0.0, 0.0, 0.5, 0.5], [0.4, 0.6], [0.1, 0.8, 0.1], [0.3, 0.7]]
+
+
+def test_abstained_questions_leave_the_metrics_and_set_coverage():
+    examples = _examples()
+    # top probabilities: 0.7, 0.5, 0.6, 0.8, 0.7; a threshold of 0.65 answers a/color, b/color, b/urgent
+    report = score(examples, PROBS, thresholds=[0.65] * 5)
+    assert report["overall"]["n"] == 3
+    assert report["overall"]["coverage"] == pytest.approx(3 / 5)
+    assert report["overall"]["accuracy"] == pytest.approx(2 / 3)
+    assert report["by_type"]["score"] == {"n": 0, "coverage": 0.0}
+    assert report["by_type"]["noul"]["coverage"] == 0.5
+    # None always answers, and reports without thresholds have no coverage
+    assert score(examples, PROBS, thresholds=[None] * 5)["overall"]["coverage"] == 1.0
+    assert "coverage" not in score(examples, PROBS)["overall"]
+
+
+def test_compare_shows_coverage_only_when_abstaining():
+    examples = _examples()
+    table = compare({"all": score(examples, PROBS), "abstain": score(examples, PROBS, thresholds=[0.65] * 5)},
+                    by="overall")
+    assert list(table.columns)[0] == "coverage"
+    assert table.loc["abstain", "coverage"] == pytest.approx(0.6)
+    assert math.isnan(table.loc["all", "coverage"])
+
+
+def _items(confidences_and_hits, qtype="choice"):
+    return [{"type": qtype, "confidence": c, "hit": h} for c, h in confidences_and_hits]
+
+
+def test_threshold_is_the_lowest_that_reaches_the_target():
+    # by confidence: 0.9 right, 0.8 right, 0.7 wrong, 0.6 right, 0.5 wrong
+    items = _items([(0.9, 1), (0.8, 1), (0.7, 0), (0.6, 1), (0.5, 0)])
+    result = thresholds_for_accuracy(items, 0.75, min_answers=1)["choice"]
+    # answering down to 0.6 gives 3/4 = 0.75; down to 0.5 gives 3/5
+    assert result == {"threshold": 0.6, "coverage": 0.8, "accuracy": 0.75, "n": 5}
+    assert thresholds_for_accuracy(items, 1.0, min_answers=1)["choice"]["threshold"] == 0.8
+    assert thresholds_for_accuracy(_items([(0.9, 0), (0.8, 0)]), 0.5, min_answers=1)["choice"]["threshold"] is None
+
+
+def test_tied_confidences_are_answered_together():
+    # a cut between the two 0.8s isn't possible: both are answered or neither
+    items = _items([(0.9, 1), (0.8, 1), (0.8, 0), (0.4, 0)])
+    assert thresholds_for_accuracy(items, 0.9, min_answers=1)["choice"]["threshold"] == 0.9
+
+
+def test_too_few_answers_give_no_threshold():
+    assert thresholds_for_accuracy(_items([(0.9, 1)] * 10), 0.9, min_answers=50) == {"choice": None}
+
+
+def test_scored_items_match_score():
+    examples = _examples()
+    items = scored_items(examples, PROBS)
+    assert [it["confidence"] for it in items] == [0.7, 0.5, 0.6, 0.8, 0.7]
+    assert sum(it["hit"] for it in items) / 5 == pytest.approx(score(examples, PROBS)["overall"]["accuracy"])

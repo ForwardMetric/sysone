@@ -12,13 +12,13 @@ from sysone.cache import FeatureCache, question_key
 from sysone.features import Features
 from sysone.layout import Encoded
 
-from .conftest import QUESTIONS, make_rows
+from .conftest import ENCODERS, QUESTIONS, make_rows
 
 FAST = dict(tuning="head", epochs=2, batch_size=16, precision="fp32", device="cpu", verbose=0)
 
 
 def _model(kind, path, **params):
-    klass = EncoderModel if kind == "modernbert" else DecoderModel
+    klass = EncoderModel if kind in ENCODERS else DecoderModel
     return klass(path, **{**FAST, **params})
 
 

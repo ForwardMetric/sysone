@@ -17,6 +17,9 @@ metrics covers hard and soft labels alike:
   options and averaged over questions.
 - **ece**: expected calibration error of the top option (see `sysone.calibration.ece`): how far
   "says X%" is from "right X% of the time".
+
+With abstention thresholds, questions whose top probability is below their threshold are left
+out of every metric, and **coverage** reports the share that were answered.
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ from .calibration import ece
 from .data import Example, examples_from
 from .questions import QUESTION_TYPES
 
-METRICS = ("accuracy", "distance", "log_loss", "brier", "ece", "score_error", "auc")
+METRICS = ("coverage", "accuracy", "distance", "log_loss", "brier", "ece", "score_error", "auc")
 _TIE = 1e-9
 _LOG_FLOOR = 1e-12
 
@@ -66,13 +69,9 @@ def _summarize(items: list[dict]) -> dict:
     return out
 
 
-def score(examples: Sequence[Example], probabilities: Sequence[Sequence[float]],
-          skipped: Mapping | None = None) -> dict:
-    """Score each example's predicted option probabilities against its target.
-
-    Returns a plain dict: `n_questions`, `overall`, `by_type`, `by_category`, `by_question`, and
-    `skipped` (questions without labels). Each group holds `n` and the metrics that apply to it.
-    """
+def scored_items(examples: Sequence[Example], probabilities: Sequence[Sequence[float]]) -> list[dict]:
+    """One dict per example with what every metric needs: `hit`, `confidence` (the top
+    probability) and the per-question terms."""
     items = []
     for ex, p in zip(examples, probabilities):
         t = ex.target
@@ -102,20 +101,75 @@ def score(examples: Sequence[Example], probabilities: Sequence[Sequence[float]],
             if abs(t[1] - t[0]) > _TIE:  # a tied soft label has no side
                 item["noul_label"] = t[1] > t[0]
         items.append(item)
+    return items
 
+
+def score(examples: Sequence[Example], probabilities: Sequence[Sequence[float]],
+          skipped: Mapping | None = None, thresholds: Sequence[float | None] | None = None) -> dict:
+    """Score each example's predicted option probabilities against its target.
+
+    Returns a plain dict: `n_questions`, `overall`, `by_type`, `by_category`, `by_question`, and
+    `skipped` (questions without labels). Each group holds `n` and the metrics that apply to it.
+    With `thresholds` (one per example, None to always answer), examples whose top probability
+    is below their threshold are abstained: `n` and the metrics count only the answered ones,
+    and each group adds `coverage`.
+    """
+    items = scored_items(examples, probabilities)
+    if thresholds is not None:
+        for it, t in zip(items, thresholds):
+            it["abstained"] = t is not None and it["confidence"] < t
     report: dict[str, Any] = {"n_questions": len(items), "skipped": dict(skipped or {})}
     if not items:
         report.update(overall=None, by_type={}, by_category={}, by_question={})
         return report
-    report["overall"] = _summarize(items)
+    summarize = _summarize if thresholds is None else _summarize_answered
+    report["overall"] = summarize(items)
     for name, field in (("by_type", "type"), ("by_category", "category"), ("by_question", "question")):
         groups: dict = defaultdict(list)
         for it in items:
             if it[field] is not None:
                 groups[it[field]].append(it)
         order = QUESTION_TYPES if field == "type" else sorted(groups, key=str)
-        report[name] = {key: _summarize(groups[key]) for key in order if key in groups}
+        report[name] = {key: summarize(groups[key]) for key in order if key in groups}
     return report
+
+
+def _summarize_answered(items: list[dict]) -> dict:
+    answered = [it for it in items if not it["abstained"]]
+    out = _summarize(answered) if answered else {"n": 0}
+    out["coverage"] = len(answered) / len(items)
+    return out
+
+
+def thresholds_for_accuracy(items: Sequence[dict], target_accuracy: float, min_answers: int = 50) -> dict:
+    """Per question type, the lowest threshold on the top probability at which the questions
+    answered reach `target_accuracy`.
+
+    Each type maps to `{"threshold", "coverage", "accuracy", "n"}`, with `threshold` None when
+    even the most confident answers miss the target, or to None when the type has fewer than
+    `min_answers` questions.
+    """
+    out: dict[str, dict | None] = {}
+    for qtype in QUESTION_TYPES:
+        group = sorted((it for it in items if it["type"] == qtype), key=lambda it: it["confidence"], reverse=True)
+        if not group:
+            continue
+        if len(group) < min_answers:
+            out[qtype] = None
+            continue
+        best = {"threshold": None, "coverage": 0.0, "accuracy": None, "n": len(group)}
+        hits = 0.0
+        for i, it in enumerate(group):
+            hits += it["hit"]
+            # a threshold answers every question at or above it, so only the last of a run of
+            # equal confidences is a valid cut
+            if i + 1 < len(group) and group[i + 1]["confidence"] >= it["confidence"] - _TIE:
+                continue
+            if hits / (i + 1) >= target_accuracy:
+                best = {"threshold": it["confidence"], "coverage": (i + 1) / len(group),
+                        "accuracy": hits / (i + 1), "n": len(group)}
+        out[qtype] = best
+    return out
 
 
 def baselines(data, train=None, questions: Mapping | None = None) -> dict[str, dict]:

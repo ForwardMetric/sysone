@@ -41,7 +41,7 @@ training and 100 test conversations), then check it against simple baselines.
 import json
 
 from datasets import load_dataset
-from sysone import EncoderModel, baselines, compare
+from sysone import SystemOneModel, baselines, compare
 
 # The questions: what the model should answer about each conversation.
 questions = {
@@ -64,7 +64,7 @@ def load_rows(split):
 train, test = load_rows("train"), load_rows("test")
 
 # Fine-tunes every layer of ModernBERT, then calibrates: run this on a decent GPU (e.g. a Colab L4).
-model = EncoderModel(tuning="full", seed=0).fit(train)
+model = SystemOneModel("answerdotai/ModernBERT-base", tuning="full", seed=0).fit(train)
 
 results = baselines(test, train=train)   # random guess and average answer
 results["full-fine-tuning"] = model.evaluate(test)
@@ -115,7 +115,7 @@ pprint(out)
 ```
 
 ```python
-model.save("sysone-support")             # reload with EncoderModel.load("sysone-support")
+model.save("sysone-support")             # reload with SystemOneModel.load("sysone-support")
 ```
 
 Questions are plain dicts, and rows can come from lists of dicts, `.jsonl`, `.csv` or
@@ -153,13 +153,21 @@ Labels can be one right answer, or a probability per option when several raters 
 
 ## Models
 
-| class | base model | default training |
+| class | base models | default training |
 |---|---|---|
-| `EncoderModel` | [ModernBERT](https://huggingface.co/answerdotai/ModernBERT-base) (encoder) | every layer |
-| `DecoderModel` | [Qwen3](https://huggingface.co/Qwen/Qwen3-0.6B) (decoder) | QLoRA adapters |
+| `EncoderModel` | [ModernBERT](https://huggingface.co/answerdotai/ModernBERT-base) (default), [EuroBERT](https://huggingface.co/EuroBERT/EuroBERT-210m), [mmBERT](https://huggingface.co/jhu-clsp/mmBERT-base) | every layer |
+| `DecoderModel` | [Qwen3](https://huggingface.co/Qwen/Qwen3-0.6B) (default), Llama, Mistral, Gemma 3 | QLoRA adapters |
 
-Both accept other sizes of the same family, such as `DecoderModel("Qwen/Qwen3-1.7B")`. Support
-for more model families is coming; until then, a new family can be added with one
+Pass any checkpoint of these families by name, such as `DecoderModel("Qwen/Qwen3-1.7B")`. If you
+don't know whether a model is an encoder or a decoder, `SystemOneModel` picks the class for you:
+
+```python
+from sysone import SystemOneModel
+
+model = SystemOneModel("EuroBERT/EuroBERT-210m")   # an EncoderModel, with its defaults
+```
+
+More families are coming; a new one can also be added with one
 [architecture class](https://sysone.readthedocs.io/en/latest/user_guide/architectures.html).
 
 ## When you need more control
@@ -204,7 +212,7 @@ explains when each setting matters, and the
 - [Examples](https://sysone.readthedocs.io/en/latest/examples.html): notebooks on public
   datasets, runnable on Google Colab.
 - [Changelog](https://sysone.readthedocs.io/en/latest/changelog.html): sysone is in early
-  development (0.3), and the API may change between minor versions.
+  development (0.4), and the API may change between minor versions.
 
 ## Contributing
 

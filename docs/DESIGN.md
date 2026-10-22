@@ -5,9 +5,9 @@ typed questions about a piece of text in a single forward pass. A user picks a b
 `fit` on labelled rows and `predict` on new ones. They never write tokenization, position ids,
 attention masks, layer freezing, adapters, training loops or calibration code.
 
-The first two supported base models are **ModernBERT** (bidirectional encoder) and **Qwen3**
-(causal decoder). Other base models are added by writing one architecture class (see
-[Architectures](#architectures)).
+Supported base models are **ModernBERT** and **EuroBERT** (bidirectional encoders) and
+**Qwen3**, **Llama**, **Mistral** and **Gemma 3** (causal decoders). Other base models are added
+by writing one architecture class (see [Architectures](#architectures)).
 
 ## Public API
 
@@ -34,7 +34,8 @@ result = model.predict(
 # {"answers": {
 #     "severity": {"type": "score", "score": 2.1, "legend": {"0": "none", ...},
 #                  "probabilities": {"0": 0.02, ...}, "confidence": 0.71, "answer_confidence": 0.64},
-#     "refund":   {"type": "noul", "noul": 0.93, "answer_confidence": 0.93},
+#     "refund":   {"type": "noul", "noul": 0.93, "probabilities": {"false": 0.07, "true": 0.93},
+#                  "answer_confidence": 0.93},
 #     "team":     {"type": "choice", "choice": "operations",
 #                  "probabilities": {...}, "confidence": 0.88, "answer_confidence": 0.91}},
 #  "usage": {"input_tokens": 61, "output_tokens": 0}}
@@ -835,7 +836,8 @@ docs/
 ```
 
 Dependencies are torch (2.8 or later: training the backbone on Apple GPUs fails in earlier
-versions), transformers (5.1 or later: 5.0's ModernBERT ignores per-layer-type masks) and peft. The
+versions), transformers (5.3 or later: 5.0's ModernBERT ignores per-layer-type masks, and EuroBERT
+arrived in 5.3) and peft. The
 minimums in `pyproject.toml` are the ones CI tests, by installing the lowest allowed versions. Because QLoRA is the default, bitsandbytes is
 also a regular dependency on platforms where it supports 4-bit training, selected with a
 platform marker in `pyproject.toml`. Elsewhere it is not installed and the fallback to `"lora"`
@@ -980,6 +982,118 @@ and how, without reading the source.
 
 **Not in scope:** behaviour changes; running the notebooks during the docs build (they download
 models and need a GPU).
+
+### Milestone 4: more base models, abstention, sharing (done, 0.4.0)
+
+**Goal:** let users pick the base model that suits their language, size and licence, without
+having to know whether it is an encoder or a decoder, and let a model say "not sure" instead of
+guessing, which calibrated probabilities make trustworthy.
+Release as 0.4.0.
+
+**In scope:**
+1. **Four more model families**, each an `Architecture` subclass with tests on tiny
+   random-weight configs (no download, so gated checkpoints need no token in CI):
+
+   | family | `model_type` | model class | example checkpoints |
+   |---|---|---|---|
+   | Llama | `llama` | `DecoderModel` | `meta-llama/Llama-3.2-1B` (gated), `HuggingFaceTB/SmolLM2-1.7B` |
+   | Mistral | `mistral` | `DecoderModel` | `mistralai/Mistral-7B-v0.3`, `mistralai/Ministral-8B-Instruct-2410` |
+   | Gemma 3 | `gemma3_text` | `DecoderModel` | `google/gemma-3-1b-pt` (gated) |
+   | EuroBERT | `eurobert` | `EncoderModel` | `EuroBERT/EuroBERT-210m` |
+
+   - The decoders share the Qwen3 layout (`DecoderArchitecture`): options read at their last
+     token, the summary at the final token. Llama, Mistral and Gemma 3 were pretrained with a
+     beginning-of-sequence token, so their sequences start with it (`add_bos`); Qwen3 has none.
+     A tokenizer without a pad token (Llama, Mistral) pads with its end-of-sequence token, which
+     is safe because padded positions are masked out.
+   - Masks: Qwen3 and Gemma 3 take masks keyed by layer type, which covers Gemma 3's mix of
+     sliding-window and global layers. Llama, Mistral and EuroBERT build their masks from a
+     single tensor and pass a 4D one through unchanged, so their architectures return one mask
+     (with Mistral's `sliding_window`, where a checkpoint sets it).
+   - Gemma 3: only the text models (`gemma3_text`, the 1B sizes). The 4B and larger checkpoints
+     wrap the text model with a vision tower under the `gemma3` type and are not handled.
+   - EuroBERT shares ModernBERT's encoder layout with its own tokens (`<|begin_of_text|>`,
+     `<|end_of_text|>`, `<|mask|>`). Its Hub repo ships model code for transformers 4.x that
+     fails on 5.x, but transformers has shipped EuroBERT natively since 5.3, which is used
+     instead: no `trust_remote_code`. The transformers minimum rises to 5.3.
+   - `learning_rates` for the new families start from the closest measured family (Qwen3 for
+     the decoders, ModernBERT for EuroBERT) and are not yet measured.
+   - Default checkpoints stay ModernBERT-base and Qwen3-0.6B.
+   - mmBERT (`jhu-clsp/mmBERT-base`), a multilingual ModernBERT, already loads through the
+     ModernBERT architecture; the docs list it.
+2. **Abstention.** `predict(..., abstain=t)` marks an answer whose `answer_confidence` is below
+   `t` with `"abstained": true`. The answer and its probabilities are still returned, so the
+   response keeps the System One shape and a caller can still log them. `t` is a float, or a
+   dict keyed by question type or question name.
+   - `evaluate(..., abstain=t)` adds `coverage` (the share of answers given) and reports
+     accuracy and the other metrics over the answers given.
+   - `model.abstention_threshold(rows, target_accuracy=0.95)` returns, per question type, the
+     lowest threshold whose accuracy on `rows` (held-out labelled data) reaches the target,
+     with its coverage. With fewer than 50 answers of a type, it returns None for that type
+     instead of a threshold fitted to noise.
+   - A threshold is only as good as the calibration behind it, so the docs show choosing one on
+     data the model was not trained or calibrated on.
+3. **Picking the class for the user.** `SystemOneModel(model_name, **params)` returns an
+   `EncoderModel` or a `DecoderModel`, whichever suits the base model, with that class's
+   defaults; `params` override them as usual. With no name it returns `EncoderModel()`, the best
+   measured default. `SystemOneModel.load(path)` already loads a saved model of either class.
+   Users who know which they want keep using the two classes directly.
+   - `SystemOneModel.__new__` makes the choice and returns the subclass, so the object is a plain
+     `EncoderModel` or `DecoderModel`: `get_params`, `clone`, `isinstance(m, SystemOneModel)` and
+     saved models are unchanged. Calls on the subclasses, and copy, pickle and load, never look
+     anything up.
+   - Choosing needs the base model's `model_type`. A table of popular checkpoints
+     (`KNOWN_MODEL_TYPES`: ModernBERT, mmBERT, Ettin, EuroBERT, Qwen3, SmolLM2, Llama 3,
+     Mistral, Gemma 3) answers without a download; other names read `config.json` (no weights).
+     The same lookup serves `fit`.
+   - A separate name such as `Model` was considered and dropped: it would clash with other
+     libraries' `Model` in the same file, and `SystemOneModel` is the name users already know.
+   - **Mismatch check:** when the architecture is resolved at `fit`, `EncoderModel` with a causal
+     architecture, or `DecoderModel` with a bidirectional one, raises a `ValueError` naming the
+     model, what it is, and the class to use instead (or `SystemOneModel`). This applies to an
+     `architecture=` passed by hand as well.
+4. **Sharing on the Hub.** `model.push_to_hub(repo_id, private=None, token=None, license=None)`
+   saves the model without its training state, writes a `README.md` model card (Hub metadata
+   with `library_name: sysone` and `base_model`, how to install and load it, a gated-base-model
+   note, and the training summary: base model and revision, class and tuning, data sizes,
+   validation accuracy, calibration), creates the repo if needed and uploads the folder. Anyone
+   then loads it with `SystemOneModel.load(repo_id)`.
+   - Noul answers add `"probabilities": {"false": p, "true": p}`. Benchmark scorers, such as
+     typed-decisions', read every answer's `probabilities` and would otherwise score a noul answer
+     as a uniform guess. The field is added, so code reading `noul` is unaffected.
+   - Benchmark result files (`.eval_results/*.yaml`) are not written by sysone: benchmarks define
+     their own metrics and submission scripts, which the benchmark notebook uses.
+5. **Polish:**
+   - `save` reports what it saved before what it left out: "saved the model; left out the 1.3 GB
+     training state, which is only needed to resume training (training_state=True includes
+     it)".
+   - The load log names the weight format for `"qlora"` ("4-bit nf4"), not only the compute
+     dtype.
+   - The changelog records the README rewrite (merged after 0.3.2, unreleased).
+
+**Measured** (typed-decisions, all workflows, full tuning, one seed each, Colab L4;
+`examples/encoder_typed_decisions_larger_encoders.ipynb`; accuracy as the leaderboard scores it,
+where a tie in the gold label counts only its first option, which runs about one point below
+`evaluate`'s accuracy):
+
+| base model | `backbone_lr` | epochs (max) | accuracy | KL from gold | Brier | minutes |
+|---|---|---|---|---|---|---|
+| mmBERT-base | 5e-5 | 8 | 0.776 | 0.112 | 0.061 | 22 |
+| ModernBERT-large | 3e-5 | 8 | 0.788 | 0.092 | 0.050 | 49 |
+| Ettin-encoder-400m | 3e-5 | 10 | 0.8025 | – | 0.044 | 59 |
+
+- Ettin-encoder-400m, ModernBERT-large's shape with newer pretraining, is the best so far and
+  is published on the Hub with its predictions. More seeds are still to run.
+- The earlier ModernBERT-base 0.787 was `evaluate`'s accuracy; on the leaderboard's scoring it
+  is about 0.778.
+- Temperatures came out near 1 for every model, and validation ECE rose slightly after
+  calibration: against soft labels, a model matching the raters' spread is "right" (agrees with
+  their top answer) more often than its confidence says, so ECE stays near 0.15 whatever the
+  temperature. Temperature scaling minimises log loss, which it does.
+
+**Not in scope:** measuring accuracy and learning rates for the new families (a later testing
+pass); a GPU CI job; `head="full"`; `loss="rlcd"`; per-category temperatures; training on many
+datasets before specialising.
 
 ## Open items
 

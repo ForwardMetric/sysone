@@ -72,7 +72,8 @@ model.predict("I'd like my money back for the broken unit.", questions)
                  "confidence": 0.88, "answer_confidence": 0.92},
     "severity": {"type": "score", "score": 1.2, "legend": {"0": "none", "1": "minor", ...},
                  "probabilities": {"0": 0.1, "1": 0.62, ...}, "confidence": 0.55, "answer_confidence": 0.62},
-    "refund":   {"type": "noul", "noul": 0.97, "answer_confidence": 0.97}},
+    "refund":   {"type": "noul", "noul": 0.97, "probabilities": {"false": 0.03, "true": 0.97},
+                 "answer_confidence": 0.97}},
  "usage": {"input_tokens": 118, "output_tokens": 0}}
 ```
 

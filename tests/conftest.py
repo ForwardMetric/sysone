@@ -1,5 +1,5 @@
-"""Tiny random-weight ModernBERT and Qwen3 models with a small tokenizer, built locally so the
-tests need no downloads."""
+"""Tiny random-weight models of every supported family with a small tokenizer, built locally so
+the tests need no downloads (gated checkpoints included)."""
 
 from __future__ import annotations
 
@@ -29,7 +29,8 @@ def _tokenizer(path):
                                   initial_alphabet=pre_tokenizers.ByteLevel.alphabet())
     tok.train_from_iterator(CORPUS * 4, trainer)
     fast = PreTrainedTokenizerFast(tokenizer_object=tok, pad_token="[PAD]", unk_token="[UNK]",
-                                   cls_token="[CLS]", sep_token="[SEP]", mask_token="[MASK]")
+                                   cls_token="[CLS]", sep_token="[SEP]", mask_token="[MASK]",
+                                   bos_token="[CLS]", eos_token="[SEP]")
     fast.save_pretrained(path)
     return fast
 
@@ -58,11 +59,65 @@ def _qwen3(path, tok):
     Qwen3Model(config).save_pretrained(path)
 
 
+def _llama(path, tok):
+    from transformers import LlamaConfig, LlamaModel
+
+    config = LlamaConfig(
+        vocab_size=len(tok), hidden_size=64, intermediate_size=96, num_hidden_layers=4, num_attention_heads=4,
+        num_key_value_heads=2, max_position_embeddings=512, pad_token_id=tok.pad_token_id,
+        bos_token_id=tok.bos_token_id, eos_token_id=tok.eos_token_id,
+    )
+    torch.manual_seed(0)
+    LlamaModel(config).save_pretrained(path)
+
+
+def _mistral(path, tok):
+    from transformers import MistralConfig, MistralModel
+
+    config = MistralConfig(
+        vocab_size=len(tok), hidden_size=64, intermediate_size=96, num_hidden_layers=4, num_attention_heads=4,
+        num_key_value_heads=2, head_dim=16, max_position_embeddings=512, sliding_window=16,
+        pad_token_id=tok.pad_token_id, bos_token_id=tok.bos_token_id, eos_token_id=tok.eos_token_id,
+    )
+    torch.manual_seed(0)
+    MistralModel(config).save_pretrained(path)
+
+
+def _gemma3(path, tok):
+    from transformers import Gemma3TextConfig, Gemma3TextModel
+
+    config = Gemma3TextConfig(
+        vocab_size=len(tok), hidden_size=64, intermediate_size=96, num_hidden_layers=4, num_attention_heads=4,
+        num_key_value_heads=2, head_dim=16, max_position_embeddings=512, sliding_window=16,
+        layer_types=["sliding_attention", "full_attention"] * 2, pad_token_id=tok.pad_token_id,
+        bos_token_id=tok.bos_token_id, eos_token_id=tok.eos_token_id,
+    )
+    torch.manual_seed(0)
+    Gemma3TextModel(config).save_pretrained(path)
+
+
+def _eurobert(path, tok):
+    from transformers import EuroBertConfig, EuroBertModel
+
+    config = EuroBertConfig(
+        vocab_size=len(tok), hidden_size=64, intermediate_size=96, num_hidden_layers=4, num_attention_heads=4,
+        num_key_value_heads=4, max_position_embeddings=512, pad_token_id=tok.pad_token_id,
+        bos_token_id=tok.bos_token_id, eos_token_id=tok.eos_token_id, mask_token_id=tok.mask_token_id,
+    )
+    torch.manual_seed(0)
+    EuroBertModel(config).save_pretrained(path)
+
+
+BUILDERS = {"modernbert": _modernbert, "qwen3": _qwen3, "llama": _llama, "mistral": _mistral,
+            "gemma3_text": _gemma3, "eurobert": _eurobert}
+ENCODERS = ("modernbert", "eurobert")
+
+
 @pytest.fixture(scope="session")
 def tiny_models(tmp_path_factory):
-    """{"modernbert": path, "qwen3": path}: local model folders with weights and tokenizer."""
+    """{model_type: path}: local model folders with weights and tokenizer, one per family."""
     paths = {}
-    for name, build in (("modernbert", _modernbert), ("qwen3", _qwen3)):
+    for name, build in BUILDERS.items():
         path = tmp_path_factory.mktemp(name)
         tok = _tokenizer(path)
         build(path, tok)
@@ -70,7 +125,7 @@ def tiny_models(tmp_path_factory):
     return paths
 
 
-@pytest.fixture(params=["modernbert", "qwen3"])
+@pytest.fixture(params=list(BUILDERS))
 def tiny_model(request, tiny_models):
     return request.param, tiny_models[request.param]
 

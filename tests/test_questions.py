@@ -84,4 +84,5 @@ def test_answer_shapes():
     a = answer(score, [0.5, 0.5])
     assert a["score"] == 0.5 and a["legend"] == {"0": "lo", "1": "hi"}
     noul = parse_question("n", {"type": "noul", "instructions": "x"})
-    assert answer(noul, [0.3, 0.7]) == {"type": "noul", "noul": 0.7, "answer_confidence": 0.7}
+    assert answer(noul, [0.3, 0.7]) == {"type": "noul", "noul": 0.7, "probabilities": {"false": 0.3, "true": 0.7},
+                                        "answer_confidence": 0.7}

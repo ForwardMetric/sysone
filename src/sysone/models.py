@@ -27,6 +27,8 @@ class EncoderModel(SystemOneModel):
     >>> model.fit(rows).predict(state, questions)  # doctest: +SKIP
     """
 
+    _causal = False
+
     def __init__(self, model_name: str = "answerdotai/ModernBERT-base", *, num_layers="all", tuning="full",
                  **kwargs):
         super().__init__(model_name, num_layers=num_layers, tuning=tuning, **kwargs)
@@ -52,6 +54,8 @@ class DecoderModel(SystemOneModel):
     >>> model.fit(rows).predict(state, questions)  # doctest: +SKIP
     """
 
+    _causal = True
+
     def __init__(self, model_name: str = "Qwen/Qwen3-0.6B", *, num_layers=0.7, **kwargs):
         super().__init__(model_name, num_layers=num_layers, **kwargs)
 
@@ -67,6 +71,8 @@ def _document_parameters(cls: type[SystemOneModel]) -> None:
         if name != "self":
             params.append(p.replace(default=defaults[name]))
     cls.__init__.__signature__ = inspect.Signature(params)
+    # SystemOneModel defines __new__, which `inspect` would otherwise read for the class itself
+    cls.__signature__ = inspect.Signature(params[1:])
     if cls.__doc__ and SystemOneModel.__doc__:
         # Python 3.13+ strips docstring indentation at compile time and older versions don't, so
         # both docstrings are dedented first and the sections are found at the start of a line.
@@ -78,3 +84,7 @@ def _document_parameters(cls: type[SystemOneModel]) -> None:
 
 _document_parameters(EncoderModel)
 _document_parameters(DecoderModel)
+# `SystemOneModel()` without a name gives the default encoder, so its signature says so
+SystemOneModel.__signature__ = inspect.Signature(
+    [p.replace(default=None) if p.name == "model_name" else p
+     for p in list(inspect.signature(SystemOneModel.__init__).parameters.values())[1:]])

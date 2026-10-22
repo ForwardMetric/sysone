@@ -5,13 +5,13 @@ import pytest
 
 from sysone import DecoderModel, EncoderModel, NotFittedError, SystemOneModel
 
-from .conftest import QUESTIONS, make_rows
+from .conftest import ENCODERS, QUESTIONS, make_rows
 
 FAST = dict(tuning="head", epochs=3, batch_size=16, precision="fp32", device="cpu", verbose=0)
 
 
 def _model(kind, path, **params):
-    klass = EncoderModel if kind == "modernbert" else DecoderModel
+    klass = EncoderModel if kind in ENCODERS else DecoderModel
     return klass(path, **{**FAST, **params})
 
 
@@ -25,7 +25,7 @@ def test_fit_predict_save_load(tiny_model, tmp_path):
     assert answers["color"]["type"] == "choice" and answers["color"]["choice"] in ("red", "green", "blue")
     assert sum(answers["color"]["probabilities"].values()) == pytest.approx(1.0, abs=1e-3)
     assert 0 <= answers["severity"]["score"] <= 3 and set(answers["severity"]["legend"]) == {"0", "1", "2", "3"}
-    assert set(answers["urgent"]) == {"type", "noul", "answer_confidence"}
+    assert set(answers["urgent"]) == {"type", "noul", "probabilities", "answer_confidence"}
     assert result["usage"]["input_tokens"] > 0 and result["usage"]["output_tokens"] == 0
 
     saved = model.save(tmp_path / "out")
@@ -139,3 +139,110 @@ def test_structural_change_starts_over(tiny_models):
     assert model.head_ is first_head  # continued training
     model.set_params(head_layers=1).fit(make_rows(10))
     assert model.head_ is not first_head
+
+
+@pytest.mark.parametrize("family", ["modernbert", "eurobert", "qwen3", "llama", "mistral", "gemma3_text"])
+def test_system_one_model_picks_the_class_from_the_base_model(tiny_models, family):
+    model = SystemOneModel(tiny_models[family], tuning="head")
+    assert type(model) is (EncoderModel if family in ENCODERS else DecoderModel)
+    assert isinstance(model, SystemOneModel)
+    assert model.tuning == "head" and model.model_name == tiny_models[family]
+    # the chosen class's own defaults apply where nothing is passed
+    assert model.num_layers == type(model)._param_defaults()["num_layers"]
+
+
+def test_system_one_model_without_a_name_is_the_default_encoder():
+    model = SystemOneModel()
+    assert type(model) is EncoderModel
+    assert model.get_params() == EncoderModel().get_params()
+
+
+def test_known_models_are_chosen_without_a_lookup(monkeypatch):
+    import transformers
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("looked up a config")
+
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", no_network)
+    assert type(SystemOneModel("Qwen/Qwen3-1.7B")) is DecoderModel
+    assert type(SystemOneModel("jhu-clsp/ettin-encoder-400m")) is EncoderModel
+    assert type(SystemOneModel("meta-llama/Llama-3.2-1B", tuning="lora")) is DecoderModel
+    assert type(SystemOneModel("EuroBERT/EuroBERT-210m")) is EncoderModel
+    with pytest.raises(AssertionError, match="looked up"):
+        SystemOneModel("someone/unknown-model")
+
+
+def test_subclasses_copy_and_pickle_never_look_anything_up(monkeypatch):
+    import pickle
+
+    import transformers
+
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("looked up a config")))
+    model = EncoderModel("someone/unknown-encoder", tuning="head")
+    assert type(copy.deepcopy(model)) is EncoderModel
+    assert type(pickle.loads(pickle.dumps(model))) is EncoderModel
+    assert DecoderModel("someone/unknown-decoder").model_name == "someone/unknown-decoder"
+
+
+def test_a_hand_passed_architecture_picks_the_class():
+    from sysone.architectures import EuroBertArchitecture, QwenArchitecture
+
+    assert type(SystemOneModel("my/local-model", architecture=QwenArchitecture())) is DecoderModel
+    assert type(SystemOneModel("my/local-model", architecture=EuroBertArchitecture())) is EncoderModel
+
+
+def test_system_one_model_load_loads_either_class(tiny_models, tmp_path):
+    _model("qwen3", tiny_models["qwen3"], epochs=1).fit(make_rows(10)).save(tmp_path / "m")
+    assert type(SystemOneModel.load(tmp_path / "m", verbose=0)) is DecoderModel
+
+
+@pytest.mark.parametrize("klass, family, kind", [(EncoderModel, "qwen3", "a decoder"),
+                                                 (EncoderModel, "llama", "a decoder"),
+                                                 (DecoderModel, "modernbert", "an encoder"),
+                                                 (DecoderModel, "eurobert", "an encoder")])
+def test_wrong_class_for_the_base_model_is_refused(tiny_models, klass, family, kind):
+    model = klass(tiny_models[family], **FAST)
+    with pytest.raises(ValueError, match="is %s .*use (EncoderModel|DecoderModel), or SystemOneModel" % kind):
+        model.fit(make_rows(10))
+
+
+def test_wrong_class_is_refused_for_a_hand_passed_architecture(tiny_models):
+    from sysone.architectures import QwenArchitecture
+
+    with pytest.raises(ValueError, match="is a decoder"):
+        EncoderModel(tiny_models["modernbert"], architecture=QwenArchitecture(), **FAST).fit(make_rows(10))
+
+
+def test_predict_and_evaluate_with_abstention(tiny_models):
+    model = _model("qwen3", tiny_models["qwen3"], epochs=1).fit(make_rows(20))
+    plain = model.predict("ticket: red minor quote", QUESTIONS)
+    assert all("abstained" not in a for a in plain["answers"].values())
+    everything = model.predict("ticket: red minor quote", QUESTIONS, abstain=0.0)
+    assert not any(a["abstained"] for a in everything["answers"].values())
+    nothing = model.predict("ticket: red minor quote", QUESTIONS, abstain=1.0)
+    assert all(a["abstained"] for a in nothing["answers"].values())
+    # a question id wins over its type; types not listed always answer
+    mixed = model.predict("ticket: red minor quote", QUESTIONS, abstain={"color": 1.0, "choice": 0.0, "noul": 1.0})
+    assert mixed["answers"]["color"]["abstained"] and mixed["answers"]["urgent"]["abstained"]
+    assert "abstained" not in mixed["answers"]["severity"]
+    assert nothing["answers"]["color"]["probabilities"] == plain["answers"]["color"]["probabilities"]
+
+    rows = make_rows(20, seed=1)
+    assert model.evaluate(rows, abstain=0.0)["overall"]["coverage"] == 1.0
+    assert model.evaluate(rows, abstain=1.0)["overall"] == {"n": 0, "coverage": 0.0}
+    with pytest.raises(ValueError, match="from 0 to 1"):
+        model.predict("x", QUESTIONS, abstain=1.5)
+
+
+def test_abstention_threshold_feeds_predict(tiny_models):
+    model = _model("qwen3", tiny_models["qwen3"], epochs=1).fit(make_rows(20))
+    rows = make_rows(120, seed=1)
+    thresholds = model.abstention_threshold(rows, target_accuracy=0.0, min_answers=10)
+    for result in thresholds.values():
+        assert result["threshold"] is not None and result["coverage"] == 1.0
+    report = model.evaluate(rows, abstain=thresholds)
+    assert report["overall"]["coverage"] == 1.0
+    assert model.abstention_threshold(rows, min_answers=10_000) == {t: None for t in thresholds}
+    with pytest.raises(ValueError, match="target_accuracy"):
+        model.abstention_threshold(rows, target_accuracy=2)

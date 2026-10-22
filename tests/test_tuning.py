@@ -9,7 +9,7 @@ from sysone import DecoderModel, EncoderModel
 from sysone.architectures import architecture_for
 from sysone.tuning import layer_plan, quantization_available
 
-from .conftest import QUESTIONS, make_rows
+from .conftest import ENCODERS, QUESTIONS, make_rows
 
 FAST = dict(epochs=2, batch_size=8, precision="fp32", device="cpu", verbose=0, num_layers="all",
             backbone_lr=1e-3)
@@ -19,7 +19,7 @@ REORDERED = {"c": {"type": "choice", "instructions": "Which color?", "criteria":
 
 
 def _model(kind, path, **params):
-    klass = EncoderModel if kind == "modernbert" else DecoderModel
+    klass = EncoderModel if kind in ENCODERS else DecoderModel
     return klass(path, **{**FAST, **params})
 
 

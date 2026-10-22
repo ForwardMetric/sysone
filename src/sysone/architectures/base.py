@@ -21,8 +21,9 @@ def encode_text(tokenizer, text: str) -> list[int]:
 class Architecture(ABC):
     """How sysone drives one family of base models.
 
-    sysone ships architectures for ModernBERT (``"modernbert"``) and Qwen3 (``"qwen3"``). To
-    support another family, subclass ``Architecture`` and register it with
+    sysone ships architectures for ModernBERT (``"modernbert"``), EuroBERT (``"eurobert"``),
+    Qwen3 (``"qwen3"``), Llama (``"llama"``), Mistral (``"mistral"``) and Gemma 3
+    (``"gemma3_text"``). To support another family, subclass ``Architecture`` and register it with
     :func:`~sysone.register_architecture`, or pass an instance as a model's ``architecture=``.
 
     A subclass must implement :meth:`pieces`, which arranges a question's tokens and says which
