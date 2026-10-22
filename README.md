@@ -35,6 +35,8 @@ Train a model to triage customer-support conversations from the public
 [typed-decisions](https://huggingface.co/datasets/LocalLLaMA/typed-decisions) dataset (300
 training and 100 test conversations), then check it against simple baselines.
 
+### 1. Train and evaluate
+
 ```python
 import json
 
@@ -62,18 +64,58 @@ def load_rows(split):
 train, test = load_rows("train"), load_rows("test")
 
 # Fine-tunes every layer of ModernBERT, then calibrates: run this on a decent GPU (e.g. a Colab L4).
-model = EncoderModel().fit(train)
+model = EncoderModel(tuning="full", seed=0).fit(train)
 
 results = baselines(test, train=train)   # random guess and average answer
-results["sysone"] = model.evaluate(test)
+results["full-fine-tuning"] = model.evaluate(test)
 compare(results, by="overall")           # accuracy, log loss, Brier score, calibration error
+```
 
-model.predict("I was charged twice for the same invoice. Please fix it.", questions)
-# {"answers": {"category": {"type": "choice", "choice": "billing",
-#                           "probabilities": {"account": ..., "billing": ..., ...}, ...},
-#              "action":   {...}}, ...}
+On a L4 Colab GPU, this gave:
 
-model.save("support-triage")             # reload with EncoderModel.load("support-triage")
+```text
+                  accuracy  distance  log_loss     brier       ece
+random guess          0.20  0.800000  1.609438  0.800000  0.000000
+average answer        0.35  0.701567  1.362123  0.709700  0.056667
+full-fine-tuning      0.73  0.305703  0.659549  0.360719  0.111332
+```
+
+The fine-tuned model picks the right answer 73% of the time, against 35% for the average
+answer in the training data, and halves the log loss. Results may vary a little with `seed`.
+
+### 2. Predict and save
+
+```python
+from pprint import pprint
+
+out = model.predict("I was charged twice for the same invoice. Please fix it.", questions)
+pprint(out)
+```
+
+```text
+{'answers': {'action': {'answer_confidence': 0.4786,
+                        'choice': 'escalate_to_human',
+                        'confidence': 0.3483,
+                        'probabilities': {'answer_directly': 0.2042,
+                                          'close_no_action': 0.0,
+                                          'escalate_to_human': 0.4786,
+                                          'execute_refund': 0.0296,
+                                          'request_information': 0.2876},
+                        'type': 'choice'},
+             'category': {'answer_confidence': 0.9963,
+                          'choice': 'billing',
+                          'confidence': 0.9954,
+                          'probabilities': {'account': 0.0034,
+                                            'billing': 0.9963,
+                                            'delivery': 0.0001,
+                                            'refund': 0.0,
+                                            'technical': 0.0001},
+                          'type': 'choice'}},
+ 'usage': {'input_tokens': 109, 'output_tokens': 0}}
+```
+
+```python
+model.save("sysone-support")             # reload with EncoderModel.load("sysone-support")
 ```
 
 Questions are plain dicts, and rows can come from lists of dicts, `.jsonl`, `.csv` or
