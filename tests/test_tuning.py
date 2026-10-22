@@ -52,7 +52,8 @@ def test_combination_trains_saves_and_loads(tiny_model, tuning, layout, tmp_path
     if layout == "parallel":
         a = loaded.predict(STATE, CHOICE)["answers"]["c"]["probabilities"]
         b = loaded.predict(STATE, REORDERED)["answers"]["c"]["probabilities"]
-        assert a == pytest.approx(b, abs=1e-5)
+        # predict rounds to 4 decimals; float noise from the changed order can flip the last digit
+        assert a == pytest.approx(b, abs=2e-4)
 
 
 @pytest.mark.skipif(not quantization_available(torch.device("cuda")), reason="needs bitsandbytes and a CUDA GPU")
