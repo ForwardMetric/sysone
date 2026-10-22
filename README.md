@@ -41,7 +41,7 @@ training and 100 test conversations), then check it against simple baselines.
 import json
 
 from datasets import load_dataset
-from sysone import EncoderModel, baselines, compare
+from sysone import SystemOneModel, baselines, compare
 
 # The questions: what the model should answer about each conversation.
 questions = {
@@ -64,7 +64,7 @@ def load_rows(split):
 train, test = load_rows("train"), load_rows("test")
 
 # Fine-tunes every layer of ModernBERT, then calibrates: run this on a decent GPU (e.g. a Colab L4).
-model = EncoderModel(tuning="full", seed=0).fit(train)
+model = SystemOneModel("answerdotai/ModernBERT-base", tuning="full", seed=0).fit(train)
 
 results = baselines(test, train=train)   # random guess and average answer
 results["full-fine-tuning"] = model.evaluate(test)
@@ -115,7 +115,7 @@ pprint(out)
 ```
 
 ```python
-model.save("sysone-support")             # reload with EncoderModel.load("sysone-support")
+model.save("sysone-support")             # reload with SystemOneModel.load("sysone-support")
 ```
 
 Questions are plain dicts, and rows can come from lists of dicts, `.jsonl`, `.csv` or
