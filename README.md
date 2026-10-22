@@ -73,7 +73,9 @@ Example notebooks, each comparing accuracy before and after training:
   [encoder_bev_decision.ipynb](https://github.com/ForwardMetric/sysone/blob/main/examples/encoder_bev_decision.ipynb) (ModernBERT);
 - typed-decisions, soft labels from several raters:
   [decoder_typed_decisions.ipynb](https://github.com/ForwardMetric/sysone/blob/main/examples/decoder_typed_decisions.ipynb) (Qwen3) and
-  [encoder_typed_decisions.ipynb](https://github.com/ForwardMetric/sysone/blob/main/examples/encoder_typed_decisions.ipynb) (ModernBERT).
+  [encoder_typed_decisions.ipynb](https://github.com/ForwardMetric/sysone/blob/main/examples/encoder_typed_decisions.ipynb) (ModernBERT);
+- measuring `ordinal_weight` for score questions on typed-decisions:
+  [encoder_typed_decisions_ordinal_weight.ipynb](https://github.com/ForwardMetric/sysone/blob/main/examples/encoder_typed_decisions_ordinal_weight.ipynb).
 
 Notebooks other than the quickstart are named `<model type>_<dataset>.ipynb`.
 
