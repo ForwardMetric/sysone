@@ -167,8 +167,28 @@ class FeatureCache:
 
 
 def cache_info(cache_dir) -> list[dict]:
-    """The cache sets in `cache_dir`, most recently used first: their folder, size, number of
-    questions, last use, and the settings that identify them."""
+    """List the feature-cache sets in a ``cache_dir``.
+
+    A model trained with ``tuning="head"`` and ``cache_dir`` writes the backbone's outputs there,
+    grouped into sets: one per combination of base model, revision, kept layers, layout,
+    precision, prompt format and token limits.
+
+    Parameters
+    ----------
+    cache_dir : str or path
+        The folder passed as ``cache_dir`` to the model.
+
+    Returns
+    -------
+    list of dict
+        One entry per set, most recently used first, with its ``set`` name, ``path``,
+        ``model``, ``n_questions``, ``size_bytes``, a readable ``size``, ``last_used`` (ISO
+        time) and the ``parts`` that identify it.
+
+    See Also
+    --------
+    clear_cache : Delete the sets.
+    """
     rows = []
     for path, meta in _sets(Path(cache_dir).expanduser()):
         size = _folder_bytes(path)
@@ -187,8 +207,25 @@ def cache_info(cache_dir) -> list[dict]:
 
 
 def clear_cache(cache_dir) -> int:
-    """Delete every cache set in `cache_dir` and return the bytes freed. Other files in the folder
-    are left alone."""
+    """Delete every feature-cache set in a ``cache_dir``.
+
+    Other files in the folder are left alone. The cache also prunes itself: it stays under the
+    model's ``cache_max_gb``, deleting the least recently used sets first.
+
+    Parameters
+    ----------
+    cache_dir : str or path
+        The folder passed as ``cache_dir`` to the model.
+
+    Returns
+    -------
+    int
+        The number of bytes freed.
+
+    See Also
+    --------
+    cache_info : List the sets and their sizes.
+    """
     freed = 0
     for path, _ in _sets(Path(cache_dir).expanduser()):
         freed += _folder_bytes(path)

@@ -1,8 +1,9 @@
 import copy
+import inspect
 
 import pytest
 
-from sysone import DecoderModel, EncoderModel, NotFittedError
+from sysone import DecoderModel, EncoderModel, NotFittedError, SystemOneModel
 
 from .conftest import QUESTIONS, make_rows
 
@@ -85,6 +86,18 @@ def test_params_round_trip():
         model.set_params(nope=1)
     assert repr(DecoderModel(epochs=5)) == "DecoderModel(epochs=5)"
     assert copy.deepcopy(model).get_params() == model.get_params()
+
+
+@pytest.mark.parametrize("klass", [EncoderModel, DecoderModel])
+def test_model_classes_show_every_parameter(klass):
+    """help(), notebook tooltips and the docs list every parameter with this class's defaults,
+    and the docstring documents each one."""
+    signature = inspect.signature(klass)
+    defaults = klass().get_params()
+    assert list(signature.parameters) == list(inspect.signature(SystemOneModel).parameters)
+    assert {name: p.default for name, p in signature.parameters.items()} == defaults
+    for name in defaults:
+        assert "\n    %s : " % name in klass.__doc__, name
 
 
 @pytest.mark.parametrize("params, error, message", [

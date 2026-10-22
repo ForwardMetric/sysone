@@ -223,3 +223,7 @@ __marimo__/
 reference/
 .DS_Store
 quickstart-model/
+
+# docs build: notebooks copied in, autosummary stubs
+docs/examples/
+docs/generated/

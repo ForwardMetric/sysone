@@ -1,0 +1,33 @@
+# Examples
+
+Each notebook trains a model, compares it with the baselines before and after training, and
+shows calibration. They run on [Google Colab](https://colab.research.google.com): the first cell
+installs sysone. The pages here show the code without outputs; open a notebook in Colab to run
+it.
+
+| notebook | data | model | run time |
+|---|---|---|---|
+| [Quickstart](examples/quickstart.ipynb) · [Colab][c-quickstart] | synthetic support tickets | either, head only | minutes, even on a laptop |
+| [Soft labels, Qwen3](examples/decoder_typed_decisions.ipynb) · [Colab][c-dec-typed] | typed-decisions: several raters per question | `DecoderModel`, head and QLoRA | GPU recommended |
+| [Soft labels, ModernBERT](examples/encoder_typed_decisions.ipynb) · [Colab][c-enc-typed] | typed-decisions | `EncoderModel`, head and full | GPU recommended |
+| [Hard labels, Qwen3](examples/decoder_bev_decision.ipynb) · [Colab][c-dec-bev] | bev-decision-150K: 18 domains | `DecoderModel`, head and QLoRA | GPU recommended |
+| [Hard labels, ModernBERT](examples/encoder_bev_decision.ipynb) · [Colab][c-enc-bev] | bev-decision-150K | `EncoderModel`, head and full | GPU recommended |
+| [Measuring `ordinal_weight`](examples/encoder_typed_decisions_ordinal_weight.ipynb) · [Colab][c-ordinal] | typed-decisions | `EncoderModel` | about an hour on an L4 |
+
+[c-quickstart]: https://colab.research.google.com/github/ForwardMetric/sysone/blob/main/examples/quickstart.ipynb
+[c-dec-typed]: https://colab.research.google.com/github/ForwardMetric/sysone/blob/main/examples/decoder_typed_decisions.ipynb
+[c-enc-typed]: https://colab.research.google.com/github/ForwardMetric/sysone/blob/main/examples/encoder_typed_decisions.ipynb
+[c-dec-bev]: https://colab.research.google.com/github/ForwardMetric/sysone/blob/main/examples/decoder_bev_decision.ipynb
+[c-enc-bev]: https://colab.research.google.com/github/ForwardMetric/sysone/blob/main/examples/encoder_bev_decision.ipynb
+[c-ordinal]: https://colab.research.google.com/github/ForwardMetric/sysone/blob/main/examples/encoder_typed_decisions_ordinal_weight.ipynb
+
+```{toctree}
+:hidden:
+
+Quickstart <examples/quickstart>
+Soft labels, Qwen3 <examples/decoder_typed_decisions>
+Soft labels, ModernBERT <examples/encoder_typed_decisions>
+Hard labels, Qwen3 <examples/decoder_bev_decision>
+Hard labels, ModernBERT <examples/encoder_bev_decision>
+Measuring ordinal_weight <examples/encoder_typed_decisions_ordinal_weight>
+```

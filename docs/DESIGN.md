@@ -961,6 +961,26 @@ instead of `[CLS]` (full tuning already works for ModernBERT); more base models 
 training one model on many decision datasets before specialising; publishing from CI;
 `head="full"`; `loss="rlcd"`.
 
+### Milestone 3.1: documentation (0.3.1)
+
+**Goal:** make the package ready to share: a programmer new to sysone should find what to use,
+and how, without reading the source.
+
+**In scope:**
+1. numpydoc docstrings for every public class and function: parameters, returns, attributes,
+   errors and examples. `EncoderModel` and `DecoderModel` show their full parameter list in
+   `help()`, notebook tooltips and the docs.
+2. A documentation site built from `docs/` with Sphinx (PyData theme, as scikit-learn uses),
+   hosted on Read the Docs: a landing page, installation, a quickstart, a user guide (questions
+   and data, choosing how to train, predictions, evaluation and calibration, saving and sharing,
+   adding a base model), the example notebooks rendered without running, the API reference
+   generated from the docstrings, a changelog, this design document and a development guide.
+3. CI builds the docs with warnings as errors on every pull request.
+4. A shorter README that points to the docs.
+
+**Not in scope:** behaviour changes; running the notebooks during the docs build (they download
+models and need a GPU).
+
 ## Open items
 
 - Whether bitsandbytes supports 4-bit training on Apple Silicon yet needs checking. If it does,

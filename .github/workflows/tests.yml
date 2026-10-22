@@ -37,3 +37,19 @@ jobs:
         run: uvx ruff check src tests
       - name: Test
         run: .venv/bin/python -m pytest -q
+
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          uv venv
+          uv pip install --torch-backend cpu -e . --group docs
+      - name: Build
+        # -W: a broken reference or docstring fails the build, as on Read the Docs
+        run: .venv/bin/sphinx-build -W --keep-going docs docs/_build/html

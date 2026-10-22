@@ -19,11 +19,49 @@ def encode_text(tokenizer, text: str) -> list[int]:
 
 
 class Architecture(ABC):
-    """How to use one model family.
+    """How sysone drives one family of base models.
 
-    Subclasses say how pieces are ordered and which positions are read (`pieces`). Loading, layer
-    access, masks and the forward pass have defaults that suit Hugging Face models whose base
-    model has a `layers` list and accepts masks as a dict keyed by layer type.
+    sysone ships architectures for ModernBERT (``"modernbert"``) and Qwen3 (``"qwen3"``). To
+    support another family, subclass ``Architecture`` and register it with
+    :func:`~sysone.register_architecture`, or pass an instance as a model's ``architecture=``.
+
+    A subclass must implement :meth:`pieces`, which arranges a question's tokens and says which
+    positions are read, and set the class attributes below. Loading, layer access, attention
+    masks and the forward pass have defaults that suit Hugging Face models whose base model
+    keeps its layers in ``model.layers`` and accepts attention masks as a dict keyed by layer
+    type; override them for models that differ.
+
+    Attributes
+    ----------
+    model_types : tuple of str
+        The ``AutoConfig.model_type`` values this architecture handles.
+    causal : bool
+        True for left-to-right models, whose tokens only see what came before them.
+    lora_targets : dict of str to list of str
+        Regular expressions, matched against module paths within one layer, for the named adapter
+        target groups ``"attention"`` and ``"mlp"``.
+    learning_rates : dict of str to float
+        The ``backbone_lr="auto"`` defaults: ``"full"`` for fully trained layers and embeddings,
+        ``"adapter"`` for LoRA adapters.
+
+    Examples
+    --------
+    A sketch for a causal model whose layers, masks and forward pass match the defaults:
+
+    >>> from sysone import Architecture, register_architecture
+    >>> from sysone.layout import Pieces
+    >>> class MyDecoderArchitecture(Architecture):
+    ...     model_types = ("mydecoder",)
+    ...     causal = True
+    ...     lora_targets = {"attention": [r"self_attn\\.(q|k|v|o)_proj"], "mlp": [r"mlp\\.(up|down)_proj"]}
+    ...     learning_rates = {"full": 2e-5, "adapter": 1e-4}
+    ...
+    ...     def pieces(self, tokenizer, head, state, options):
+    ...         # question and state first, then each option read at its last token, then one
+    ...         # closing token that has seen everything, read as the summary
+    ...         return Pieces(prefix=[*head, *state], options=options, option_read=[-1] * len(options),
+    ...                       suffix=[tokenizer.eos_token_id], summary=("suffix", -1))
+    >>> register_architecture("mydecoder", MyDecoderArchitecture)
     """
 
     #: `AutoConfig.model_type` values this architecture handles.
@@ -118,8 +156,26 @@ class Architecture(ABC):
 
     @abstractmethod
     def pieces(self, tokenizer, head: list[int], state: list[int], options: list[list[int]]) -> Pieces:
-        """Arrange already-tokenized pieces: `head` (task line and question), `state`, and each
-        option's own text. Adds the model's special tokens and delimiters."""
+        """Arrange one question's tokens and say which positions are read.
+
+        Parameters
+        ----------
+        tokenizer : transformers.PreTrainedTokenizerBase
+            The base model's tokenizer, for special token ids and delimiters.
+        head : list of int
+            Tokens of the task line and the question's instructions.
+        state : list of int
+            Tokens of the state, already truncated to its budget.
+        options : list of list of int
+            Tokens of each option's own text, in option order.
+
+        Returns
+        -------
+        Pieces
+            The sequence, with the model's special tokens and delimiters added. In a causal
+            model, each option's read position and the summary must come after everything they
+            need to see.
+        """
 
     # -- forward -----------------------------------------------------------------------------
 
