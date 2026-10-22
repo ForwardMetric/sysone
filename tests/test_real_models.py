@@ -33,12 +33,12 @@ def test_real_model_lora_training(klass, tmp_path):
                                          ("EuroBERT/EuroBERT-210m", EncoderModel),
                                          ("jhu-clsp/mmBERT-small", EncoderModel)])
 def test_more_families_train_and_reload(name, klass, tmp_path):
-    from sysone import Model
+    from sysone import SystemOneModel
 
-    model = Model(name, tuning="head", epochs=2, batch_size=16, verbose=0)
+    model = SystemOneModel(name, tuning="head", epochs=2, batch_size=16, verbose=0)
     assert type(model) is klass
     model.fit(make_rows(40))
     result = model.predict("ticket: blue minor quote", QUESTIONS)
     assert set(result["answers"]) == {"color", "severity", "urgent"}
-    loaded = Model.load(model.save(tmp_path / "m"), verbose=0)
+    loaded = SystemOneModel.load(model.save(tmp_path / "m"), verbose=0)
     assert loaded.predict("ticket: blue minor quote", QUESTIONS) == result

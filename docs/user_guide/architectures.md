@@ -12,7 +12,7 @@ sysone supports these families of base models out of the box:
 | Gemma 3 | `gemma3_text` | {class}`~sysone.DecoderModel` | `google/gemma-3-1b-pt`, `google/gemma-3-1b-it` |
 
 Any checkpoint of a supported family works by name: `DecoderModel("Qwen/Qwen3-1.7B")`. The
-architecture is looked up from the checkpoint's `model_type`, and {func}`~sysone.Model` uses it
+architecture is looked up from the checkpoint's `model_type`, and {class}`~sysone.SystemOneModel` uses it
 to pick `EncoderModel` or `DecoderModel` for you.
 
 Some notes:

@@ -7,8 +7,9 @@ More base models, a class picker, and abstention.
 - **Four more model families**: Llama, Mistral and Gemma 3 (text) with `DecoderModel`, and
   EuroBERT with `EncoderModel`. mmBERT, a multilingual ModernBERT, already worked and is now
   listed. See [Base models](user_guide/architectures.md).
-- **`sysone.Model`** picks `EncoderModel` or `DecoderModel` from the base model, with that
-  class's defaults; `Model.load` loads either.
+- **`SystemOneModel(model_name)`** now picks `EncoderModel` or `DecoderModel` from the base
+  model, with that class's defaults (popular models need no lookup); `SystemOneModel.load`
+  already loaded either.
 - **Wrong class, clear error**: an encoder in `DecoderModel`, or a decoder in `EncoderModel`,
   now raises a `ValueError` naming the right class, instead of training with defaults meant for
   the other kind.
@@ -17,7 +18,7 @@ More base models, a class picker, and abstention.
   given; `abstention_threshold(rows, target_accuracy=...)` picks thresholds per question type
   on held-out data. See [Abstaining](user_guide/predictions.md#abstaining).
 - **`push_to_hub`** uploads a model with a model card, so others can load it with
-  `Model.load("user/name")`. See [Sharing on the Hugging Face Hub](user_guide/saving.md#sharing-on-the-hugging-face-hub).
+  `SystemOneModel.load("user/name")`. See [Sharing on the Hugging Face Hub](user_guide/saving.md#sharing-on-the-hugging-face-hub).
 - Yes/no answers also give `probabilities` (`"false"` and `"true"`), as choice and score answers
   do, which benchmark scorers expect.
 - `save` now says it saved the model when it leaves out a large training state, instead of

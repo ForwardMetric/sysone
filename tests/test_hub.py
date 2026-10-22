@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from sysone import DecoderModel, Model, NotFittedError
+from sysone import DecoderModel, NotFittedError, SystemOneModel
 from sysone.hub import model_card
 
 from .conftest import QUESTIONS, make_rows
@@ -37,7 +37,7 @@ def test_model_card_has_metadata_usage_and_training(fitted):
     card = model_card(fitted, "me/triage", license="apache-2.0")
     assert card.startswith("---\nlibrary_name: sysone\nbase_model: %s\n" % fitted.model_name)
     assert "license: apache-2.0" in card
-    assert 'Model.load("me/triage")' in card
+    assert 'SystemOneModel.load("me/triage")' in card
     assert "`DecoderModel`, `tuning=\"head\"`" in card
     assert "training and" in card and "Validation accuracy" in card
     assert "gated" not in card
@@ -64,7 +64,7 @@ def test_push_to_hub_uploads_model_and_card_without_training_state(fitted, monke
 
 def test_push_to_hub_needs_a_fitted_model(tiny_models):
     with pytest.raises(NotFittedError):
-        Model(tiny_models["qwen3"], **FAST).push_to_hub("me/triage")
+        SystemOneModel(tiny_models["qwen3"], **FAST).push_to_hub("me/triage")
 
 
 def test_noul_answers_carry_probabilities(fitted):

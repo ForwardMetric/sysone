@@ -142,27 +142,59 @@ def test_structural_change_starts_over(tiny_models):
 
 
 @pytest.mark.parametrize("family", ["modernbert", "eurobert", "qwen3", "llama", "mistral", "gemma3_text"])
-def test_model_picks_the_class_from_the_base_model(tiny_models, family):
-    from sysone import Model
-
-    model = Model(tiny_models[family], tuning="head")
+def test_system_one_model_picks_the_class_from_the_base_model(tiny_models, family):
+    model = SystemOneModel(tiny_models[family], tuning="head")
     assert type(model) is (EncoderModel if family in ENCODERS else DecoderModel)
-    assert model.tuning == "head"
+    assert isinstance(model, SystemOneModel)
+    assert model.tuning == "head" and model.model_name == tiny_models[family]
     # the chosen class's own defaults apply where nothing is passed
     assert model.num_layers == type(model)._param_defaults()["num_layers"]
 
 
-def test_model_without_a_name_is_the_default_encoder():
-    from sysone import Model
+def test_system_one_model_without_a_name_is_the_default_encoder():
+    model = SystemOneModel()
+    assert type(model) is EncoderModel
+    assert model.get_params() == EncoderModel().get_params()
 
-    assert Model().get_params() == EncoderModel().get_params()
+
+def test_known_models_are_chosen_without_a_lookup(monkeypatch):
+    import transformers
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("looked up a config")
+
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", no_network)
+    assert type(SystemOneModel("Qwen/Qwen3-1.7B")) is DecoderModel
+    assert type(SystemOneModel("jhu-clsp/ettin-encoder-400m")) is EncoderModel
+    assert type(SystemOneModel("meta-llama/Llama-3.2-1B", tuning="lora")) is DecoderModel
+    assert type(SystemOneModel("EuroBERT/EuroBERT-210m")) is EncoderModel
+    with pytest.raises(AssertionError, match="looked up"):
+        SystemOneModel("someone/unknown-model")
 
 
-def test_model_load_loads_either_class(tiny_models, tmp_path):
-    from sysone import Model
+def test_subclasses_copy_and_pickle_never_look_anything_up(monkeypatch):
+    import pickle
 
+    import transformers
+
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("looked up a config")))
+    model = EncoderModel("someone/unknown-encoder", tuning="head")
+    assert type(copy.deepcopy(model)) is EncoderModel
+    assert type(pickle.loads(pickle.dumps(model))) is EncoderModel
+    assert DecoderModel("someone/unknown-decoder").model_name == "someone/unknown-decoder"
+
+
+def test_a_hand_passed_architecture_picks_the_class():
+    from sysone.architectures import EuroBertArchitecture, QwenArchitecture
+
+    assert type(SystemOneModel("my/local-model", architecture=QwenArchitecture())) is DecoderModel
+    assert type(SystemOneModel("my/local-model", architecture=EuroBertArchitecture())) is EncoderModel
+
+
+def test_system_one_model_load_loads_either_class(tiny_models, tmp_path):
     _model("qwen3", tiny_models["qwen3"], epochs=1).fit(make_rows(10)).save(tmp_path / "m")
-    assert type(Model.load(tmp_path / "m", verbose=0)) is DecoderModel
+    assert type(SystemOneModel.load(tmp_path / "m", verbose=0)) is DecoderModel
 
 
 @pytest.mark.parametrize("klass, family, kind", [(EncoderModel, "qwen3", "a decoder"),
@@ -171,7 +203,7 @@ def test_model_load_loads_either_class(tiny_models, tmp_path):
                                                  (DecoderModel, "eurobert", "an encoder")])
 def test_wrong_class_for_the_base_model_is_refused(tiny_models, klass, family, kind):
     model = klass(tiny_models[family], **FAST)
-    with pytest.raises(ValueError, match="is %s .*use (EncoderModel|DecoderModel), or sysone.Model" % kind):
+    with pytest.raises(ValueError, match="is %s .*use (EncoderModel|DecoderModel), or SystemOneModel" % kind):
         model.fit(make_rows(10))
 
 

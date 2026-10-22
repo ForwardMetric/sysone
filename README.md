@@ -159,12 +159,12 @@ Labels can be one right answer, or a probability per option when several raters 
 | `DecoderModel` | [Qwen3](https://huggingface.co/Qwen/Qwen3-0.6B) (default), Llama, Mistral, Gemma 3 | QLoRA adapters |
 
 Pass any checkpoint of these families by name, such as `DecoderModel("Qwen/Qwen3-1.7B")`. If you
-don't know whether a model is an encoder or a decoder, `Model` picks the class for you:
+don't know whether a model is an encoder or a decoder, `SystemOneModel` picks the class for you:
 
 ```python
-from sysone import Model
+from sysone import SystemOneModel
 
-model = Model("EuroBERT/EuroBERT-210m")   # an EncoderModel, with its defaults
+model = SystemOneModel("EuroBERT/EuroBERT-210m")   # an EncoderModel, with its defaults
 ```
 
 More families are coming; a new one can also be added with one

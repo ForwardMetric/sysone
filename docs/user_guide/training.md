@@ -17,16 +17,19 @@ Both take the same parameters. `EncoderModel` also runs EuroBERT and mmBERT, and
 `DecoderModel` runs Llama, Mistral and Gemma 3, as well as other sizes of each family, such as
 `DecoderModel("Qwen/Qwen3-1.7B")`; see [Base models](architectures.md) for the list.
 
-If you don't know or don't mind which kind a base model is, {func}`~sysone.Model` picks the
-class for you:
+If you don't know or don't mind which kind a base model is, {class}`~sysone.SystemOneModel`
+picks the class for you:
 
 ```python
-from sysone import Model
+from sysone import SystemOneModel
 
-model = Model("HuggingFaceTB/SmolLM2-1.7B")   # a DecoderModel, with DecoderModel's defaults
-model = Model("EuroBERT/EuroBERT-210m")       # an EncoderModel
-model = Model.load("my-model")                # a saved model of either kind
+model = SystemOneModel("HuggingFaceTB/SmolLM2-1.7B")   # a DecoderModel, with DecoderModel's defaults
+model = SystemOneModel("EuroBERT/EuroBERT-210m")       # an EncoderModel
+model = SystemOneModel.load("my-model")                # a saved model of either kind
 ```
+
+For popular base models sysone already knows which kind they are; for others it reads the
+model's `config.json` (a few KB, no weights) to decide.
 
 Using the wrong class, such as `EncoderModel("Qwen/Qwen3-0.6B")`, raises an error naming the
 right one: each class's defaults are chosen for its kind of model.

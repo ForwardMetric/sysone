@@ -62,9 +62,9 @@ pip install "sysone>={version}"
 ```
 
 ```python
-from sysone import Model
+from sysone import SystemOneModel
 
-model = Model.load("{repo}")
+model = SystemOneModel.load("{repo}")
 model.predict("text to decide about", questions)
 ```
 

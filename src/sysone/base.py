@@ -111,10 +111,15 @@ class NotFittedError(RuntimeError):
 class SystemOneModel:
     """Fine-tune and calibrate a system-one decision model.
 
-    Use :class:`~sysone.EncoderModel` (ModernBERT by default) or :class:`~sysone.DecoderModel`
-    (Qwen3 by default), or :func:`~sysone.Model` to pick between them; this is their shared base
-    class. Both take every parameter below and differ only in the defaults of
-    ``model_name``, ``num_layers`` and ``tuning``.
+    ``SystemOneModel(model_name, ...)`` returns an :class:`~sysone.EncoderModel` or a
+    :class:`~sysone.DecoderModel`, whichever suits the base model, with that class's defaults;
+    with no ``model_name`` it returns ``EncoderModel()`` (ModernBERT-base, the best measured
+    default). Choosing reads the base model's ``config.json`` (no weights), except for popular
+    models sysone already knows. Use ``EncoderModel`` or ``DecoderModel`` directly to choose
+    yourself. ``SystemOneModel`` is also their shared base class, and
+    :meth:`SystemOneModel.load` loads a saved model of either kind. Both classes take every
+    parameter below and differ only in the defaults of ``model_name``, ``num_layers`` and
+    ``tuning``.
 
     As in scikit-learn, ``__init__`` only stores the parameters, so :meth:`get_params` and
     :meth:`set_params` work and a configuration round-trips through JSON. Everything learned in
@@ -129,7 +134,8 @@ class SystemOneModel:
     ----------
     model_name : str
         Hugging Face Hub id or local path of the base model. ``EncoderModel`` defaults to
-        ``"answerdotai/ModernBERT-base"``, ``DecoderModel`` to ``"Qwen/Qwen3-0.6B"``.
+        ``"answerdotai/ModernBERT-base"``, ``DecoderModel`` to ``"Qwen/Qwen3-0.6B"``, and
+        ``SystemOneModel()`` without one gives ``EncoderModel()``.
     architecture : Architecture or None, default=None
         How to drive the base model. None looks it up from the model's ``model_type``; pass an
         :class:`~sysone.Architecture` instance to use a base model sysone doesn't support yet.
@@ -315,6 +321,19 @@ class SystemOneModel:
 
     #: True for decoder classes, False for encoder classes, None to accept either.
     _causal: bool | None = None
+
+    def __new__(cls, *args, **kwargs):
+        # `SystemOneModel(...)` builds the subclass that suits the base model; the subclasses
+        # (and copy, pickle and load, which pass no arguments) construct themselves as usual.
+        if cls is not SystemOneModel:
+            return super().__new__(cls)
+        from .models import DecoderModel, EncoderModel
+
+        model_name = args[0] if args else kwargs.get("model_name")
+        if model_name is None:
+            return super().__new__(EncoderModel)
+        arch = kwargs.get("architecture") or architecture_for(model_name, revision=kwargs.get("revision"))
+        return super().__new__(DecoderModel if arch.causal else EncoderModel)
 
     def __init__(
         self,
@@ -633,7 +652,7 @@ class SystemOneModel:
         if self._causal is None or arch.causal == self._causal:
             return
         kind, other = ("a decoder", "DecoderModel") if arch.causal else ("an encoder", "EncoderModel")
-        raise ValueError("%s is %s (%s), but %s is for %s; use %s, or sysone.Model to pick the class "
+        raise ValueError("%s is %s (%s), but %s is for %s; use %s, or SystemOneModel to pick the class "
                          "from the base model" % (self.model_name, kind, arch.name(), type(self).__name__,
                                                   "decoders" if self._causal else "encoders", other))
 
@@ -1366,7 +1385,7 @@ class SystemOneModel:
         Saves the model without its training state (see :meth:`save`), writes a ``README.md``
         model card (how to install and load it, the base model, and the training and calibration
         summary), and uploads the folder, creating the repo if needed. Others then load it with
-        ``Model.load(repo_id)``. The base model is not uploaded: it is downloaded from its own
+        ``SystemOneModel.load(repo_id)``. The base model is not uploaded: it is downloaded from its own
         repo, so a gated base model needs its licence accepted by each user.
 
         Parameters
@@ -1398,7 +1417,7 @@ class SystemOneModel:
         Examples
         --------
         >>> model.push_to_hub("my-org/ticket-triage", private=True)  # doctest: +SKIP
-        >>> Model.load("my-org/ticket-triage")                       # doctest: +SKIP
+        >>> SystemOneModel.load("my-org/ticket-triage")              # doctest: +SKIP
         """
         from .hub import push_to_hub
 

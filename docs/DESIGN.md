@@ -1033,25 +1033,31 @@ Release as 0.4.0.
      instead of a threshold fitted to noise.
    - A threshold is only as good as the calibration behind it, so the docs show choosing one on
      data the model was not trained or calibrated on.
-3. **Picking the class for the user.** `sysone.Model(model_name, **params)` reads the base
-   model's config (`config.json` only, no weights), looks up its architecture and returns an
-   `EncoderModel` or a `DecoderModel` with that class's defaults; `params` override them as usual.
-   `Model()` with no name gives `EncoderModel()`, the best measured default. `Model.load(path)`
-   loads a saved model of either class (`SystemOneModel.load`). Users who know which they want
-   keep using the two classes directly.
-   - It is a factory, not a class: what it returns is a plain `EncoderModel` or `DecoderModel`,
-     so `get_params`, `clone` and saved models are unchanged. It is not named `AutoModel`, which
-     would clash with transformers' class of that name in the same notebook.
-   - **Mismatch check:** when the architecture is resolved (at `fit`, or at construction through
-     `Model`), `EncoderModel` with a causal architecture, or `DecoderModel` with a bidirectional
-     one, raises a `ValueError` naming the model, what it is, and the class to use instead (or
-     `sysone.Model`). This applies to an `architecture=` passed by hand as well.
+3. **Picking the class for the user.** `SystemOneModel(model_name, **params)` returns an
+   `EncoderModel` or a `DecoderModel`, whichever suits the base model, with that class's
+   defaults; `params` override them as usual. With no name it returns `EncoderModel()`, the best
+   measured default. `SystemOneModel.load(path)` already loads a saved model of either class.
+   Users who know which they want keep using the two classes directly.
+   - `SystemOneModel.__new__` makes the choice and returns the subclass, so the object is a plain
+     `EncoderModel` or `DecoderModel`: `get_params`, `clone`, `isinstance(m, SystemOneModel)` and
+     saved models are unchanged. Calls on the subclasses, and copy, pickle and load, never look
+     anything up.
+   - Choosing needs the base model's `model_type`. A table of popular checkpoints
+     (`KNOWN_MODEL_TYPES`: ModernBERT, mmBERT, Ettin, EuroBERT, Qwen3, SmolLM2, Llama 3,
+     Mistral, Gemma 3) answers without a download; other names read `config.json` (no weights).
+     The same lookup serves `fit`.
+   - A separate name such as `Model` was considered and dropped: it would clash with other
+     libraries' `Model` in the same file, and `SystemOneModel` is the name users already know.
+   - **Mismatch check:** when the architecture is resolved at `fit`, `EncoderModel` with a causal
+     architecture, or `DecoderModel` with a bidirectional one, raises a `ValueError` naming the
+     model, what it is, and the class to use instead (or `SystemOneModel`). This applies to an
+     `architecture=` passed by hand as well.
 4. **Sharing on the Hub.** `model.push_to_hub(repo_id, private=None, token=None, license=None)`
    saves the model without its training state, writes a `README.md` model card (Hub metadata
    with `library_name: sysone` and `base_model`, how to install and load it, a gated-base-model
    note, and the training summary: base model and revision, class and tuning, data sizes,
    validation accuracy, calibration), creates the repo if needed and uploads the folder. Anyone
-   then loads it with `Model.load(repo_id)`.
+   then loads it with `SystemOneModel.load(repo_id)`.
    - Noul answers add `"probabilities": {"false": p, "true": p}`. Benchmark scorers, such as
      typed-decisions', read every answer's `probabilities` and would otherwise score a noul answer
      as a uniform guess. The field is added, so code reading `noul` is unaffected.

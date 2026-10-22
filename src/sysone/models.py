@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import inspect
 
-from .architectures.registry import architecture_for
 from .base import SystemOneModel
 
 
@@ -61,55 +60,6 @@ class DecoderModel(SystemOneModel):
         super().__init__(model_name, num_layers=num_layers, **kwargs)
 
 
-def Model(model_name: str | None = None, **params) -> SystemOneModel:  # noqa: N802 (reads as a class)
-    """Make an :class:`EncoderModel` or a :class:`DecoderModel`, whichever suits the base model.
-
-    Reads the base model's configuration (``config.json`` only, no weights) to see whether it is
-    an encoder or a decoder, and returns that class with its own defaults. Use it when you don't
-    know or don't mind which kind a base model is; the returned model is an ordinary
-    ``EncoderModel`` or ``DecoderModel``, so saving, loading and :meth:`~SystemOneModel.get_params`
-    work as usual.
-
-    Parameters
-    ----------
-    model_name : str or None, default=None
-        Hugging Face Hub id or local path of the base model. None gives ``EncoderModel()``, whose
-        default (fully tuned ModernBERT-base) is the best measured so far.
-    **params
-        Any parameter of :class:`SystemOneModel`, overriding the chosen class's defaults.
-        ``revision`` and ``architecture`` are also used to look up the kind of model.
-
-    Returns
-    -------
-    EncoderModel or DecoderModel
-        Not fitted yet.
-
-    Raises
-    ------
-    ValueError
-        If no architecture is registered for the base model's type.
-
-    See Also
-    --------
-    SystemOneModel.load : Load a saved model of either class (also available as ``Model.load``).
-
-    Examples
-    --------
-    >>> from sysone import Model
-    >>> model = Model("Qwen/Qwen3-0.6B")             # a DecoderModel  # doctest: +SKIP
-    >>> model = Model("EuroBERT/EuroBERT-210m")      # an EncoderModel  # doctest: +SKIP
-    >>> model = Model.load("my-model")               # either kind  # doctest: +SKIP
-    """
-    if model_name is None:
-        return EncoderModel(**params)
-    arch = params.get("architecture") or architecture_for(model_name, revision=params.get("revision"))
-    klass = DecoderModel if arch.causal else EncoderModel
-    return klass(model_name, **params)
-
-
-Model.load = SystemOneModel.load
-
-
 def _document_parameters(cls: type[SystemOneModel]) -> None:
     """Give `cls.__init__` the full parameter list, with this class's defaults, and append the
     shared Parameters and Attributes sections to its docstring, so `help()`, notebook tooltips
@@ -121,6 +71,8 @@ def _document_parameters(cls: type[SystemOneModel]) -> None:
         if name != "self":
             params.append(p.replace(default=defaults[name]))
     cls.__init__.__signature__ = inspect.Signature(params)
+    # SystemOneModel defines __new__, which `inspect` would otherwise read for the class itself
+    cls.__signature__ = inspect.Signature(params[1:])
     if cls.__doc__ and SystemOneModel.__doc__:
         # Python 3.13+ strips docstring indentation at compile time and older versions don't, so
         # both docstrings are dedented first and the sections are found at the start of a line.
@@ -132,3 +84,7 @@ def _document_parameters(cls: type[SystemOneModel]) -> None:
 
 _document_parameters(EncoderModel)
 _document_parameters(DecoderModel)
+# `SystemOneModel()` without a name gives the default encoder, so its signature says so
+SystemOneModel.__signature__ = inspect.Signature(
+    [p.replace(default=None) if p.name == "model_name" else p
+     for p in list(inspect.signature(SystemOneModel.__init__).parameters.values())[1:]])

@@ -44,9 +44,9 @@ model.push_to_hub("your-org/ticket-model", private=True)   # log in first: hf au
 ```
 
 ```python
-from sysone import Model
+from sysone import SystemOneModel
 
-model = Model.load("your-org/ticket-model")
+model = SystemOneModel.load("your-org/ticket-model")
 ```
 
 - The upload leaves out the training state, so it holds only what predicting needs: a few
