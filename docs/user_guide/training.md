@@ -179,7 +179,7 @@ The decision head turns the backbone's output into one score per option. Two set
   text is read again. More loops add computation, not parameters.
 
 ```python
-model = EncoderModel("jhu-clsp/ettin-encoder-400m", head="full", head_loops=3)
+model = SystemOneModel("jhu-clsp/ettin-encoder-400m", head="full", head_loops=3)
 ```
 
 - While training, every loop gives an answer and is scored, later loops counting more; the
