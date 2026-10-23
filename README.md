@@ -19,7 +19,8 @@ correcting over-confident probabilities. sysone does all of that for you. You de
 questions, hand it labelled examples, and get back a model whose "80% sure" means right about
 80% of the time.
 
-**Documentation: [sysone.readthedocs.io](https://sysone.readthedocs.io)**
+**Documentation: [sysone.readthedocs.io](https://sysone.readthedocs.io)** · New to sysone? Start with
+[10 minutes to sysone](https://sysone.readthedocs.io/en/latest/10min.html).
 
 ## Install
 

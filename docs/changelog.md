@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.2
+
+Documentation; no change to the library.
+
+- **[10 minutes to sysone](10min.md)**, a new first page: a tour that builds up from a first
+  model through fine-tuning, LoRA and which layers train, soft labels, data in files, abstention,
+  choosing the base model, long runs, saving and serving. Every step runs as written, and a slow
+  test runs the whole page.
+- Every example in the README, the docs and the notebooks now builds models with
+  `SystemOneModel("<base model>")` and loads them with `SystemOneModel.load`. `EncoderModel` and
+  `DecoderModel` appear where the docs explain the two kinds.
+- The training guide cites the current best measured result (Ettin-encoder-400m, 0.80), and
+  notebooks install `sysone>=0.5.1`.
+
 ## 0.5.1
 
 - **`loss="rlcd"` fixed.** In 0.5.0 its noise was too large (a fixed 1.0): averaging a softmax over
