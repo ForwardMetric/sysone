@@ -645,7 +645,7 @@ sysone serve ticket-model
 ```
 
 ```text
-sysone 0.5.1 serving ticket-model at http://127.0.0.1:8000/v1/systemone
+sysone 0.5.2 serving ticket-model at http://127.0.0.1:8000/v1/systemone
 ```
 
 From another terminal:
