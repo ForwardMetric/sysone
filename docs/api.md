@@ -43,6 +43,18 @@ and differ only in three defaults. {class}`SystemOneModel` is their shared base 
    clear_cache
 ```
 
+## Serving
+
+```{eval-rst}
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   serve.create_app
+```
+
+The `sysone serve` command wraps it; see [Serving](user_guide/serving.md).
+
 ## Extending sysone
 
 ```{eval-rst}

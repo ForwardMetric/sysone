@@ -25,7 +25,7 @@ from ._util import autocast, empty_device_cache, is_out_of_memory
 from .data import Example
 from .features import Features, collate_features, read_vectors, run_in_batches
 from .layout import Encoded, collate
-from .losses import decision_loss
+from .losses import decision_loss, rlcd_loss
 from .questions import TYPE_INDEX
 
 OPTIMIZERS = ("adamw", "adamw_8bit", "sgd")
@@ -96,9 +96,11 @@ class Network:
 
     def __init__(self, head: nn.Module, device: torch.device, backbone: nn.Module | None = None, arch=None,
                  pad_id: int = 0, backbone_groups: dict | None = None, autocast_dtype: torch.dtype | None = None,
-                 ordinal_weight: float = 0.0):
+                 ordinal_weight: float = 0.0, loss: str = "soft-ce", rlcd: dict | None = None):
         self.head = head
         self.ordinal_weight = ordinal_weight
+        self.loss = loss
+        self.rlcd = rlcd or {}
         self.device = device
         self.backbone = backbone
         self.arch = arch
@@ -135,10 +137,16 @@ class Network:
 
     def objective(self, items: Sequence[TrainItem]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """`(loss per row, logits, target)`: soft cross-entropy, plus the ranked-probability term on
-        score questions."""
+        score questions. With `loss="rlcd"` the scoring-rule policy gradient is added while
+        training only, so validation loss (which early stopping reads) stays deterministic and
+        comparable across losses."""
         logits, mask, target = self.forward(items)
         ordinal = torch.tensor([it.qtype == TYPE_INDEX["score"] for it in items], device=logits.device)
-        return decision_loss(logits, target, mask, ordinal, self.ordinal_weight), logits, target
+        if self.loss == "rlcd" and self.head.training:
+            rows = rlcd_loss(logits, target, mask, ordinal, self.ordinal_weight, **self.rlcd)
+        else:
+            rows = decision_loss(logits, target, mask, ordinal, self.ordinal_weight)
+        return rows, logits, target
 
     def snapshot(self) -> dict[str, torch.Tensor]:
         return {n: p.detach().to("cpu", torch.float32, copy=True) for n, p in self.named_trainable()}

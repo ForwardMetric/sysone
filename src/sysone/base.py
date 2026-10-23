@@ -99,6 +99,9 @@ _ADAPTER_PARAMS = ("lora_rank", "lora_alpha", "lora_dropout", "lora_targets", "q
 _RUN_PARAMS = ("batch_size", "validation_fraction", "validation_interval", "seed", "balance", "optimizer",
                "scheduler", "warmup_ratio", "backbone_lr", "head_lr", "weight_decay", "grad_clip",
                "shuffle_options", "label_smoothing", "ordinal_weight")
+# Added to the run settings only with loss="rlcd", so soft-ce runs keep the fingerprint they had
+# before rlcd existed and earlier checkpoints still resume.
+_RLCD_PARAMS = ("loss", "rlcd_weight", "rlcd_samples", "rlcd_noise", "rlcd_spherical")
 
 
 class NotFittedError(RuntimeError):
@@ -230,8 +233,20 @@ class SystemOneModel:
     validation_interval : int or "auto", default="auto"
         Optimizer steps between validation checks. ``"auto"`` checks once per epoch with
         ``tuning="head"`` and about ten times per epoch when the backbone learns.
-    loss : {"soft-ce"}, default="soft-ce"
-        Training objective: cross-entropy against the (possibly soft) target distribution.
+    loss : {"soft-ce", "rlcd"}, default="soft-ce"
+        Training objective. ``"soft-ce"``: cross-entropy against the (possibly soft) target
+        distribution. ``"rlcd"`` (experimental): soft cross-entropy plus a policy-gradient term
+        that rewards noisy copies of the prediction with proper scoring rules (log, spherical, and
+        ranked probability for score questions), which tends to temper over-confidence. It
+        applies while training only; validation loss stays soft cross-entropy.
+    rlcd_weight : float, default=1.0
+        With ``loss="rlcd"``: weight of the policy-gradient term. 0 makes it ``"soft-ce"``.
+    rlcd_samples : int, default=8
+        With ``loss="rlcd"``: noisy copies drawn per question for the policy gradient.
+    rlcd_noise : float, default=1.0
+        With ``loss="rlcd"``: standard deviation of the Gaussian noise added to the logits.
+    rlcd_spherical : float, default=1.5
+        With ``loss="rlcd"``: weight of the spherical score next to the log score in the reward.
     ordinal_weight : float, default=1.0
         Weight of the ranked probability score added to the loss of score questions, so
         predicting a level next to the right one costs less than one far away. 0 turns it off.
@@ -382,6 +397,10 @@ class SystemOneModel:
         validation_interval="auto",
         # objective and data
         loss: str = "soft-ce",
+        rlcd_weight: float = 1.0,
+        rlcd_samples: int = 8,
+        rlcd_noise: float = 1.0,
+        rlcd_spherical: float = 1.5,
         ordinal_weight: float = 1.0,
         label_smoothing: float = 0.0,
         shuffle_options="auto",
@@ -436,6 +455,10 @@ class SystemOneModel:
         self.target_loss = target_loss
         self.validation_interval = validation_interval
         self.loss = loss
+        self.rlcd_weight = rlcd_weight
+        self.rlcd_samples = rlcd_samples
+        self.rlcd_noise = rlcd_noise
+        self.rlcd_spherical = rlcd_spherical
         self.ordinal_weight = ordinal_weight
         self.label_smoothing = label_smoothing
         self.shuffle_options = shuffle_options
@@ -598,8 +621,18 @@ class SystemOneModel:
             if isinstance(self.shuffle_options, str) or unknown:
                 raise ValueError("shuffle_options must be 'auto', None or a list of question types, got %r"
                                  % (self.shuffle_options,))
-        if self.loss not in LOSSES + ("rlcd",):
-            raise ValueError("loss must be one of 'soft-ce', 'rlcd', got %r" % (self.loss,))
+        if self.loss not in LOSSES:
+            raise ValueError("loss must be one of %s, got %r" % (", ".join(repr(x) for x in LOSSES), self.loss))
+        for name in ("rlcd_weight", "rlcd_spherical"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or value < 0:
+                raise ValueError("%s must be a number of at least 0, got %r" % (name, value))
+        if isinstance(self.rlcd_noise, bool) or not isinstance(self.rlcd_noise, Real) \
+                or not math.isfinite(self.rlcd_noise) or self.rlcd_noise <= 0:
+            raise ValueError("rlcd_noise must be a positive number, got %r" % (self.rlcd_noise,))
+        if isinstance(self.rlcd_samples, bool) or not isinstance(self.rlcd_samples, int) or self.rlcd_samples < 2:
+            raise ValueError("rlcd_samples must be an int of at least 2 (the baseline needs two), got %r"
+                             % (self.rlcd_samples,))
         if self.cache_features not in ("auto", True, False):
             raise ValueError("cache_features must be 'auto', True or False, got %r" % (self.cache_features,))
         if self.tuning in ("head", "full") and self.lora_layers not in (None, 0):
@@ -626,8 +659,6 @@ class SystemOneModel:
         # Not implemented yet in this version.
         if self.head != "compact":
             raise NotImplementedError("head=%r is not implemented yet; use head='compact'" % (self.head,))
-        if self.loss != "soft-ce":
-            raise NotImplementedError("loss=%r is not implemented yet; use loss='soft-ce'" % (self.loss,))
 
     # -- building ------------------------------------------------------------------------------
 
@@ -751,7 +782,8 @@ class SystemOneModel:
             h.update(json.dumps([ex.state, ex.qid, q.type, q.instructions, list(q.keys), list(q.texts), ex.target,
                                  ex.category], default=str).encode())
         params = self.get_params()
-        h.update(json.dumps({k: params[k] for k in _RUN_PARAMS}, sort_keys=True, default=str).encode())
+        keys = _RUN_PARAMS + (_RLCD_PARAMS if self.loss == "rlcd" else ())
+        h.update(json.dumps({k: params[k] for k in keys}, sort_keys=True, default=str).encode())
         return h.hexdigest()
 
     def _disk_cache(self) -> FeatureCache:
@@ -962,7 +994,10 @@ class SystemOneModel:
 
         net = Network(self.head_, self.device_, backbone=self.backbone_ if plan.learns else None,
                       arch=self.architecture_, pad_id=self.tokenizer_.pad_token_id, backbone_groups=backbone_groups,
-                      autocast_dtype=self._autocast_dtype(), ordinal_weight=float(self.ordinal_weight))
+                      autocast_dtype=self._autocast_dtype(), ordinal_weight=float(self.ordinal_weight),
+                      loss=self.loss, rlcd={"weight": float(self.rlcd_weight), "samples": int(self.rlcd_samples),
+                                            "noise": float(self.rlcd_noise),
+                                            "spherical_weight": float(self.rlcd_spherical)})
         settings = TrainSettings(
             epochs=self.epochs, batch_size=self.batch_size,
             lrs=self._learning_rates(),

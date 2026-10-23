@@ -31,7 +31,7 @@ jobs:
         run: |
           uv venv
           uv pip install --torch-backend cpu --resolution ${{ matrix.resolution }} \
-            -e . "pytest>=8.0" "tokenizers>=0.20" "pandas>=2.0"
+            -e ".[serve]" "pytest>=8.0" "tokenizers>=0.20" "pandas>=2.0" "httpx>=0.27"
       - name: Lint
         if: matrix.resolution == 'highest'
         run: uvx ruff check src tests

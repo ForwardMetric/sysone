@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.0
+
+Serving, and an experimental calibration-oriented loss.
+
+- **`sysone serve MODEL`** serves a saved model (a local folder or a Hub repo id) over HTTP with
+  the System One API of TypeSafe's Jev: `POST /v1/systemone`, `GET /v1/models` and `GET /healthz`,
+  with Jev's request, response and error shapes. The official `typesafe-sdk` works against it
+  with only its base URL changed. Requests are batched, an API key can be required
+  (`--api-key-env`), and abstention thresholds can apply to every request. Install with
+  `pip install "sysone[serve]"`. See [Serving](user_guide/serving.md).
+- `sysone.serve.create_app` returns the FastAPI app, to embed or extend.
+- **`loss="rlcd"`** (experimental): soft cross-entropy plus a policy-gradient term that rewards
+  noisy predictions with proper scoring rules (log, spherical, and ranked probability for score
+  questions), aimed at better-calibrated probabilities. New parameters `rlcd_weight`,
+  `rlcd_samples`, `rlcd_noise` and `rlcd_spherical`. Interrupted `rlcd` runs resume exactly, and
+  `soft-ce` checkpoints from 0.4 still resume. See
+  [the training objective](user_guide/training.md#the-training-objective-lossrlcd-experimental).
+- The model card written by `push_to_hub` shows how to serve the model.
+
 ## 0.4.0
 
 More base models, a class picker, and abstention.

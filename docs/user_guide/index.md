@@ -12,5 +12,6 @@ training
 predictions
 evaluation
 saving
+serving
 architectures
 ```
