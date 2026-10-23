@@ -31,6 +31,9 @@ model = SystemOneModel("answerdotai/ModernBERT-base").fit(rows)   # rows: labell
 model.predict("My order arrived broken and I want my money back.", questions)
 ```
 
+New to sysone? [10 minutes to sysone](10min.md) is a short tour that builds up from a first
+model to fine-tuning, soft labels, abstention, long runs and serving, with every step run.
+
 ## Why sysone
 
 - **One model, many questions.** Questions are passed at prediction time. One model answers
@@ -48,6 +51,7 @@ model.predict("My order arrived broken and I want my money back.", questions)
 :maxdepth: 2
 :hidden:
 
+10min
 install
 quickstart
 user_guide/index
