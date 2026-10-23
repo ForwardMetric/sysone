@@ -1095,6 +1095,79 @@ where a tie in the gold label counts only its first option, which runs about one
 pass); a GPU CI job; `head="full"`; `loss="rlcd"`; per-category temperatures; training on many
 datasets before specialising.
 
+### Milestone 5: serving (0.5.0)
+
+**Goal:** `sysone serve <model>` turns any saved sysone model into an HTTP API with the same
+request and response shape as TypeSafe's Jev (`POST /v1/systemone`), so existing Jev clients
+and the typesafe SDK work against it by changing only the base URL, and benchmarks that call
+Jev-style endpoints can score sysone models. Release as 0.5.0.
+
+**In scope:**
+1. **The command.** `sysone serve MODEL` loads `MODEL` (a local folder or a Hub repo id, through
+   `SystemOneModel.load`) and serves it with uvicorn:
+
+   ```
+   sysone serve you/support-triage [--host 127.0.0.1] [--port 8000] [--name NAME]
+                [--device auto] [--api-key-env VAR] [--abstain T | --abstain-file F]
+                [--max-batch 32] [--batch-wait-ms 5]
+   ```
+
+   - `--host` defaults to `127.0.0.1`; serving on a network is a choice (`--host 0.0.0.0`).
+   - `--name` is the model id the API reports (default: the repo id or folder name).
+   - `--api-key-env VAR`: when set, requests must send `Authorization: Bearer <value of VAR>`;
+     the key is read from the environment, never from the command line, so it doesn't land in
+     shell history or process lists. Without it the server accepts every request, which suits
+     local use.
+   - `sysone` becomes a console script (`[project.scripts]`), with `serve` its first
+     subcommand. FastAPI and uvicorn are an optional extra, `pip install "sysone[serve]"`; without
+     them `sysone serve` says which extra to install.
+2. **The API**, Jev's shape:
+   - `POST /v1/systemone` takes `{"model": str (optional), "state": str | object | list of str,
+     "questions": {id: question}}` and returns `{"id": "dec-…", "model": NAME, "answers": {…},
+     "usage": {"input_tokens": n, "output_tokens": 0}}`. The answers are exactly what `predict`
+     returns, so they include `probabilities` for every type, `answer_confidence`, and
+     `abstained` when thresholds apply. `model` in the request is accepted and ignored: one
+     server serves one model, as a single Jev deployment does, and clients that always send
+     `jev-latest` still work.
+   - `GET /v1/models` lists the one model in Jev's shape, `{"models": [{"name": NAME, "description":
+     …, "release_date": "YYYY-MM-DD"}]}`; `GET /healthz` returns 200 once the model is loaded and
+     needs no key.
+   - Errors follow Jev's: a body or question that doesn't validate gives **422** with
+     `{"detail": [{"loc": ["body", "questions", "urgency", "score", "criteria"], "msg": "…", "type":
+     "…", "input": …}]}` naming the field, with the question's type before the field as Jev's
+     tagged union reports it; a missing or wrong key gives **401**; `"stream": true` gives **400**
+     (decisions are not streamed). An `x-request-id` header matches the response `id`.
+   - **Abstention:** the server can apply thresholds to every request (`--abstain 0.8`, or
+     `--abstain-file thresholds.json` holding what `abstention_threshold` returns), and a request
+     may pass its own `"abstain"`, a sysone extension that Jev clients never send.
+3. **Batching.** Requests are queued and a single worker runs them through the model together:
+   it takes whatever is waiting, up to `--max-batch` requests, waiting at most `--batch-wait-ms`
+   for more once one has arrived, so a lone request is not delayed by more than that. The model
+   runs in a worker thread, so the event loop keeps accepting requests during a forward pass.
+   One model, one GPU, one worker: no locking around the model is needed.
+4. **Library use.** `sysone.serve.create_app(model, name=..., api_key=..., abstain=...)`
+   returns the FastAPI app, so a server can be embedded, extended or tested in-process.
+5. **Docs:** a "Serving" page in the user guide (the command, the API with curl and typesafe-sdk
+   examples, auth, abstention, batching, deploying behind a reverse proxy); a README section;
+   the model card that `push_to_hub` writes shows the serve command.
+
+**Tests:** FastAPI's test client against the tiny models: the response shape and that it equals
+`predict`; validation errors with the failing field; auth on and off; `stream` refused;
+abstention from the server and from the request; concurrent requests batched together and each
+answered with its own result; `/v1/models` and `/healthz`; the CLI's argument parsing and the
+missing-extra message.
+
+**Not in scope:** several models per server (run one server per model); streaming; HTTPS (put
+a reverse proxy in front); rate limiting and usage accounting; a request queue that survives a
+restart.
+
+**Checked against the official client:** `typesafe-sdk` 0.7.5, pointed at `sysone serve` with
+`base_url`, parses every answer type, a JSON-object state and `GET /v1/models`, raises its own
+authentication and validation errors for a wrong key and a bad question, and answers 20
+concurrent async requests. Its response schema is where the `/v1/models` shape and the 422
+locations above come from: the design first guessed an OpenAI-style model list and locations
+without the type.
+
 ## Open items
 
 - Whether bitsandbytes supports 4-bit training on Apple Silicon yet needs checking. If it does,

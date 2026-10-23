@@ -170,6 +170,26 @@ model = SystemOneModel("EuroBERT/EuroBERT-210m")   # an EncoderModel, with its d
 More families are coming; a new one can also be added with one
 [architecture class](https://sysone.readthedocs.io/en/latest/user_guide/architectures.html).
 
+## Serve it as an API
+
+`sysone serve` puts any saved model behind the System One API (`POST /v1/systemone`), the request
+and response shape of TypeSafe's Jev, so Jev clients and the `typesafe-sdk` work with it by
+changing only the base URL:
+
+```bash
+pip install "sysone[serve]"
+sysone serve your-username/sysone-support          # a Hub repo id or a local folder
+```
+
+```bash
+curl http://127.0.0.1:8000/v1/systemone -H "Content-Type: application/json" -d '{
+  "state": "I was charged twice for the same invoice.",
+  "questions": {"refund": {"type": "noul", "instructions": "Is the customer asking for money back?"}}}'
+```
+
+Requests are batched, an API key can be required, and abstention thresholds can apply to every
+answer; see [Serving](https://sysone.readthedocs.io/en/latest/user_guide/serving.html).
+
 ## When you need more control
 
 The defaults are meant to work without tuning, but every choice can be overridden:

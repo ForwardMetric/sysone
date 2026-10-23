@@ -44,8 +44,12 @@ Repository = "https://github.com/ForwardMetric/sysone"
 Issues = "https://github.com/ForwardMetric/sysone/issues"
 Design = "https://github.com/ForwardMetric/sysone/blob/main/docs/DESIGN.md"
 
+[project.scripts]
+sysone = "sysone.cli:main"
+
 [project.optional-dependencies]
 pandas = ["pandas>=2.0"]
+serve = ["fastapi>=0.110", "uvicorn>=0.29"]
 
 [dependency-groups]
 dev = [
@@ -55,6 +59,9 @@ dev = [
     "tokenizers>=0.20",
     "ipykernel>=7.3.0",
     "datasets>=5.1.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "httpx>=0.27",
 ]
 docs = [
     "myst-nb>=1.1",

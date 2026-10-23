@@ -71,6 +71,13 @@ model.predict("text to decide about", questions)
 `questions` is a dict of questions, each with a `type`, `instructions` and, for choice and score
 questions, `criteria`; the model answers best on questions like those it was trained on. See the
 [sysone documentation](https://sysone.readthedocs.io) for the result format and abstention.
+
+To serve it with the System One API (`POST /v1/systemone`, as TypeSafe's Jev):
+
+```bash
+pip install "sysone[serve]>={version}"
+sysone serve {repo}
+```
 {gated}
 Only the trained parts are stored here; the base model is downloaded from its own repo at the
 revision listed below.

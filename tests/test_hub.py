@@ -38,6 +38,7 @@ def test_model_card_has_metadata_usage_and_training(fitted):
     assert card.startswith("---\nlibrary_name: sysone\nbase_model: %s\n" % fitted.model_name)
     assert "license: apache-2.0" in card
     assert 'SystemOneModel.load("me/triage")' in card
+    assert "sysone serve me/triage" in card
     assert "`DecoderModel`, `tuning=\"head\"`" in card
     assert "training and" in card and "Validation accuracy" in card
     assert "gated" not in card

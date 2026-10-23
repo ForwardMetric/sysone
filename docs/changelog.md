@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.0 (unreleased)
+
+Serving.
+
+- **`sysone serve MODEL`** serves a saved model (a local folder or a Hub repo id) over HTTP with
+  the System One API of TypeSafe's Jev: `POST /v1/systemone`, `GET /v1/models` and `GET /healthz`,
+  with Jev's request, response and error shapes. The official `typesafe-sdk` works against it
+  with only its base URL changed. Requests are batched, an API key can be required
+  (`--api-key-env`), and abstention thresholds can apply to every request. Install with
+  `pip install "sysone[serve]"`. See [Serving](user_guide/serving.md).
+- `sysone.serve.create_app` returns the FastAPI app, to embed or extend.
+- The model card written by `push_to_hub` shows how to serve the model.
+
 ## 0.4.0
 
 More base models, a class picker, and abstention.
