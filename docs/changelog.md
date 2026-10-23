@@ -9,6 +9,8 @@
   shrinks to the new `rlcd_noise_end=0.1` over training, sums to zero over each question's
   options, and advantages are normalized. Defaults change to `rlcd_samples=4` and
   `rlcd_spherical=0.75`. An interrupted 0.5.0 `rlcd` run starts again rather than resuming.
+  Measured on typed-decisions with Ettin-encoder-400m: 0.796 accuracy against `soft-ce`'s 0.803,
+  with the same validation ECE, so `soft-ce` stays the default.
 
 ## 0.5.0
 

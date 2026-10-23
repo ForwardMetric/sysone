@@ -634,6 +634,12 @@ Losses:
     and 0.1 settle within KL 0.002 of the target. 0.5.0 used a fixed σ = 1 with an unnormalized
     advantage, and on Ettin-encoder-400m it trained to 0.64 accuracy against `soft-ce`'s 0.80;
     0.5.1 fixed both.
+  - Measured with 0.5.1 (typed-decisions, Ettin-encoder-400m, 10 epochs, seed 0, leaderboard
+    scoring): 0.796 accuracy against `soft-ce`'s 0.8025, validation ECE 0.170 against about
+    0.17; temperatures came out near 1 (1.06, 0.99, 1.06). Training was stable. It ties `soft-ce`
+    rather than beating it, so `soft-ce` stays the default. ECE on soft labels counts a
+    prediction right when its top answer matches the raters' top answer, so a model that
+    reports the raters' split exactly still has an ECE gap; no loss removes it.
   - It applies while training only. Validation loss, which early stopping and `target_loss` read,
     stays soft cross-entropy, so it is deterministic and comparable between losses.
   - Noise comes from torch's global generator, whose state the training state saves, so an

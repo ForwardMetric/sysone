@@ -156,6 +156,9 @@ model = EncoderModel("jhu-clsp/ettin-encoder-400m", loss="rlcd")
   the term rewards scores sharper than the labels and teaches over-confidence. In 0.5.0 the noise
   was a fixed 1.0, and Ettin-encoder-400m on typed-decisions reached 0.64 accuracy against 0.80
   with `soft-ce`.
+- Measured with 0.5.1 on typed-decisions, Ettin-encoder-400m, 10 epochs, one seed: `rlcd` 0.796
+  accuracy against `soft-ce`'s 0.803, and the same validation ECE (0.17). On that data it doesn't
+  improve on `soft-ce`, which stays the default.
 - It is experimental: whether it beats `soft-ce` on your data is worth checking with `evaluate`,
   comparing `ece`, `log_loss` and `accuracy`.
 
