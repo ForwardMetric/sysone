@@ -39,15 +39,19 @@ def decision_loss(logits: torch.Tensor, target: torch.Tensor, option_mask: torch
     return rows
 
 
+LOG_FLOOR = -9.21  # log(1e-4): one near-zero probability can't swamp the rest of a reward group
+
+
 def _scoring_reward(probs: torch.Tensor, target: torch.Tensor, option_mask: torch.Tensor, ordinal: torch.Tensor,
                     spherical_weight: float, ordinal_weight: float) -> torch.Tensor:
-    """Reward of predicted distributions `[..., B, K]` against targets `[B, K]`: the log score,
-    plus `spherical_weight` times the spherical score, minus `ordinal_weight` times the ranked
-    probability score on ordered (score) rows. Each is a strictly proper scoring rule, so the
-    expected reward is highest when the prediction equals the target distribution."""
+    """Reward of predicted distributions `[..., B, K]` against targets `[B, K]`: the log score
+    (floored at `LOG_FLOOR`), plus `spherical_weight` times the spherical score, minus
+    `ordinal_weight` times the ranked probability score on ordered (score) rows. Each is a
+    strictly proper scoring rule, so the expected reward is highest when the prediction equals the
+    target distribution."""
     probs = probs * option_mask
     target = target * option_mask
-    reward = (target * torch.log(probs.clamp(min=1e-12))).sum(-1)
+    reward = (target * torch.log(probs.clamp(min=1e-12)).clamp(min=LOG_FLOOR)).sum(-1)
     if spherical_weight:
         spherical = (target * probs).sum(-1) / probs.norm(dim=-1).clamp(min=1e-12)
         reward = reward + spherical_weight * spherical
@@ -60,6 +64,12 @@ def _scoring_reward(probs: torch.Tensor, target: torch.Tensor, option_mask: torc
     return reward
 
 
+def rlcd_noise_at(progress: float, noise: float, noise_end: float) -> float:
+    """The exploration noise `progress` (0 to 1) of the way through training: linear from
+    `noise` to `noise_end`."""
+    return noise + (noise_end - noise) * min(1.0, max(0.0, progress))
+
+
 def scoring_rule_policy_gradient(logits: torch.Tensor, target: torch.Tensor, option_mask: torch.Tensor,
                                  ordinal: torch.Tensor, samples: int, noise: float, spherical_weight: float,
                                  ordinal_weight: float) -> torch.Tensor:
@@ -67,22 +77,30 @@ def scoring_rule_policy_gradient(logits: torch.Tensor, target: torch.Tensor, opt
 
     Treats the logits as the mean of a Gaussian policy: `samples` noisy copies
     `logits + noise * eps` are drawn, each is turned into a distribution and rewarded with
-    `_scoring_reward` against the target, and the loss is REINFORCE with the group-mean reward as
-    baseline, `-mean_g (R_g - mean R) * log N(z_g; logits, noise^2)`. Its gradient follows the
-    expected reward of the noisy predictions, which a proper scoring rule maximises at the target
-    distribution: it rewards distributions that stay right under perturbation, which tends to temper
-    over-confidence. Padded option slots get no noise and no gradient.
+    `_scoring_reward` against the target, and the loss is REINFORCE,
+    `-mean_g A_g * log N(z_g; logits, noise^2)`. The advantage `A` is each sample's reward minus
+    its row's mean, divided by the standard deviation of all advantages in the batch, so the
+    term's size doesn't depend on how spread the rewards are.
+
+    The noise sums to zero over each row's options: a shift shared by every option leaves the
+    softmax unchanged, so it would only add variance. Keep the noise small (`rlcd_noise_at`
+    anneals it): averaging a softmax over large logit noise flattens it, so with large noise the
+    expected reward peaks at logits sharper than the target, which teaches over-confidence.
+    Padded option slots get no noise and no gradient.
     """
     logits = logits.float()
     real = option_mask.bool()
-    eps = torch.randn((samples,) + tuple(logits.shape), device=logits.device) * real
+    m = real.float()
+    eps = torch.randn((samples,) + tuple(logits.shape), device=logits.device) * m
+    eps = (eps - eps.sum(-1, keepdim=True) / m.sum(-1, keepdim=True).clamp(min=1)) * m
     sampled = (logits.detach()[None] + noise * eps).masked_fill(~real[None], float("-inf"))
     with torch.no_grad():
         reward = _scoring_reward(torch.softmax(sampled, dim=-1), target, option_mask, ordinal, spherical_weight,
                                  ordinal_weight)  # [G, B]
         advantage = reward - reward.mean(0, keepdim=True)
+        advantage = advantage / (advantage.std() + 1e-6)
     # log-density of each sample under N(logits, noise^2), up to a constant
-    diff = (sampled.masked_fill(~real[None], 0.0) - logits[None]) * real[None]
+    diff = (sampled.masked_fill(~real[None], 0.0) - logits[None]) * m[None]
     log_prob = -diff.square().sum(-1) / (2 * noise ** 2)  # [G, B]
     return -(advantage * log_prob).mean(0)
 

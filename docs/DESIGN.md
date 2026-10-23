@@ -618,21 +618,36 @@ Losses:
   ranked-probability term (below).
 - `rlcd` (experimental, milestone 5): soft cross-entropy (with the ranked-probability term) plus
   `rlcd_weight` times a policy-gradient term. The logits are the mean of a Gaussian policy:
-  `rlcd_samples` noisy copies `z + rlcd_noise · ε` are drawn per question, each becomes a
-  distribution, and each is rewarded with proper scoring rules against the target: the log score,
-  plus `rlcd_spherical` times the spherical score, minus `ordinal_weight` times the ranked
-  probability score on score questions. The loss is REINFORCE with the group-mean reward as
-  baseline, `−mean_g (R_g − mean R) · log N(z_g; z, σ²)`, whose gradient follows the expected
-  reward of the noisy predictions. A proper scoring rule's expected reward peaks at the target
-  distribution, so the term favours predictions that stay right under perturbation, which tends to
-  temper over-confidence.
+  `rlcd_samples` noisy copies `z + σ · ε` are drawn per question, each becomes a distribution,
+  and each is rewarded with proper scoring rules against the target: the log score (floored at
+  log 1e-4), plus `rlcd_spherical` times the spherical score, minus `ordinal_weight` times the
+  ranked probability score on score questions. The loss is REINFORCE,
+  `−mean_g A_g · log N(z_g; z, σ²)`, with advantage `A` = each sample's reward minus its row's
+  mean, divided by the standard deviation of all advantages in the forward pass.
+  - The noise sums to zero over each row's options: a shift shared by every option leaves the
+    softmax unchanged and would only add variance.
+  - σ moves linearly from `rlcd_noise` (0.4) to `rlcd_noise_end` (0.1) over training, by step,
+    so a resumed run continues at the same noise.
+  - The noise must stay small. Averaging a softmax over logit noise flattens it, so the expected
+    reward of the noisy predictions peaks at logits sharper than the target: with the term alone,
+    σ = 1 settles on a top probability of 0.72 where the target's is 0.63 (KL 0.035); σ = 0.4
+    and 0.1 settle within KL 0.002 of the target. 0.5.0 used a fixed σ = 1 with an unnormalized
+    advantage, and on Ettin-encoder-400m it trained to 0.64 accuracy against `soft-ce`'s 0.80;
+    0.5.1 fixed both.
+  - Measured with 0.5.1 (typed-decisions, Ettin-encoder-400m, 10 epochs, seed 0, leaderboard
+    scoring): 0.796 accuracy against `soft-ce`'s 0.8025, validation ECE 0.170 against about
+    0.17; temperatures came out near 1 (1.06, 0.99, 1.06). Training was stable. It ties `soft-ce`
+    rather than beating it, so `soft-ce` stays the default. ECE on soft labels counts a
+    prediction right when its top answer matches the raters' top answer, so a model that
+    reports the raters' split exactly still has an ECE gap; no loss removes it.
   - It applies while training only. Validation loss, which early stopping and `target_loss` read,
     stays soft cross-entropy, so it is deterministic and comparable between losses.
   - Noise comes from torch's global generator, whose state the training state saves, so an
     interrupted `rlcd` run resumes exactly. Its settings join the run fingerprint only with
     `loss="rlcd"`, so `soft-ce` runs keep their fingerprints and earlier checkpoints still resume.
-  - Defaults (`rlcd_weight=1`, `rlcd_samples=8`, `rlcd_noise=1`, `rlcd_spherical=1.5`) are starting
-    points, not measured; the spherical weight follows a published run of the method.
+  - Defaults (`rlcd_weight=1`, `rlcd_samples=4`, `rlcd_noise=0.4`, `rlcd_noise_end=0.1`,
+    `rlcd_spherical=0.75`) follow a published run of the method; they are not yet measured
+    against `soft-ce` here.
 
 **Score questions are ordered.** Cross-entropy treats a score's levels as unrelated categories:
 predicting level 2 when the answer is 3 costs as much as predicting 0. For score questions the

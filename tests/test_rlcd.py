@@ -4,12 +4,12 @@ import pytest
 import torch
 
 from sysone import DecoderModel, EncoderModel
-from sysone.losses import _scoring_reward, decision_loss, rlcd_loss, scoring_rule_policy_gradient
+from sysone.losses import _scoring_reward, decision_loss, rlcd_loss, rlcd_noise_at, scoring_rule_policy_gradient
 
 from .conftest import ENCODERS, QUESTIONS, make_rows
 
 FAST = dict(tuning="head", epochs=2, batch_size=16, precision="fp32", device="cpu", verbose=0)
-RLCD = dict(weight=1.0, samples=8, noise=1.0, spherical_weight=1.5)
+RLCD = dict(weight=1.0, samples=4, noise=0.4, spherical_weight=0.75)
 
 
 def _rows(*dists, k_max=None):
@@ -61,6 +61,41 @@ def test_policy_gradient_moves_predictions_toward_the_target():
     assert torch.softmax(logits.detach(), -1).argmax(-1).tolist() == [0, 2]
 
 
+@pytest.mark.parametrize("noise", [0.4, 0.1])
+def test_policy_gradient_settles_on_the_target_not_sharper(noise):
+    # with large logit noise the expected reward peaks at sharper logits than the target, which
+    # taught over-confidence; at the default noise levels the term settles on the target itself
+    torch.manual_seed(0)
+    target = torch.softmax(torch.randn(256, 4) * 1.5, -1)
+    mask = torch.ones(256, 4, dtype=torch.bool)
+    logits = torch.zeros(256, 4, requires_grad=True)
+    optimizer = torch.optim.Adam([logits], lr=0.02)
+    for _ in range(1500):
+        optimizer.zero_grad()
+        scoring_rule_policy_gradient(logits, target, mask, torch.zeros(256, dtype=torch.bool), samples=32,
+                                     noise=noise, spherical_weight=0.75, ordinal_weight=0.0).mean().backward()
+        optimizer.step()
+    p = torch.softmax(logits.detach(), -1)
+    assert float((target * (target.log() - p.log())).sum(-1).mean()) < 0.005
+    assert float(p.max(-1).values.mean() - target.max(-1).values.mean()) < 0.03
+
+
+def test_noise_sums_to_zero_over_each_rows_options():
+    # a shift shared by all options doesn't change the softmax: the samples differ only within a row
+    torch.manual_seed(0)
+    target, mask = _rows([0.7, 0.3], [0.2, 0.3, 0.5])
+    logits = torch.zeros(2, 3, requires_grad=True)
+    scoring_rule_policy_gradient(logits, target, mask, torch.tensor([False, False]), samples=8, noise=0.4,
+                                 spherical_weight=0.75, ordinal_weight=0.0).sum().backward()
+    torch.testing.assert_close(logits.grad.sum(-1), torch.zeros(2), atol=1e-5, rtol=0)
+
+
+def test_noise_anneals_from_start_to_end():
+    assert rlcd_noise_at(0.0, 0.4, 0.1) == pytest.approx(0.4)
+    assert rlcd_noise_at(0.5, 0.4, 0.1) == pytest.approx(0.25)
+    assert rlcd_noise_at(1.0, 0.4, 0.1) == pytest.approx(0.1)
+
+
 def test_padded_options_get_no_gradient():
     target, mask = _rows([0.7, 0.3], [0.2, 0.3, 0.5])
     logits = torch.randn(2, 3, requires_grad=True)
@@ -84,13 +119,14 @@ def test_fit_predict_save_load_with_rlcd(tiny_models, family, tuning, tmp_path):
     model = klass(tiny_models[family], **{**FAST, "tuning": tuning}, loss="rlcd", rlcd_samples=4).fit(make_rows(30))
     before = model.predict("ticket: red minor refund", QUESTIONS)
     loaded = klass.load(model.save(tmp_path / "m"), verbose=0)
-    assert loaded.loss == "rlcd" and loaded.rlcd_samples == 4
+    assert loaded.loss == "rlcd" and loaded.rlcd_samples == 4 and loaded.rlcd_noise_end == 0.1
     assert loaded.predict("ticket: red minor refund", QUESTIONS) == before
 
 
 @pytest.mark.parametrize("params, message", [
     (dict(rlcd_samples=1), "rlcd_samples"),
     (dict(rlcd_noise=0), "rlcd_noise"),
+    (dict(rlcd_noise_end=-0.1), "rlcd_noise_end"),
     (dict(rlcd_weight=-1), "rlcd_weight"),
     (dict(rlcd_spherical=float("nan")), "rlcd_spherical"),
     (dict(loss="focal"), "loss must be one of"),

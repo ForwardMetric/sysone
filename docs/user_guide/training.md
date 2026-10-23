@@ -132,11 +132,11 @@ default) by deleting the least recently used sets; {func}`~sysone.cache_info` li
 ## The training objective: `loss="rlcd"` (experimental)
 
 By default sysone minimises cross-entropy against the labels (`loss="soft-ce"`). `loss="rlcd"`
-adds a second term: it perturbs the model's scores with noise several times per question, rewards
-each perturbed prediction with proper scoring rules (rules that reward honest probabilities), and
-pushes the model toward the predictions that scored well. The aim is better-calibrated
-probabilities, especially against soft labels, where `soft-ce` alone tends to leave answers
-slightly over- or under-confident.
+adds a second term: it perturbs the model's scores with a little noise several times per
+question, rewards each perturbed prediction with proper scoring rules (rules that reward honest
+probabilities), and pushes the model toward the predictions that scored well. The noise starts at
+`rlcd_noise` and shrinks to `rlcd_noise_end` over training. The aim is better-calibrated
+probabilities, especially against soft labels.
 
 ```python
 model = EncoderModel("jhu-clsp/ettin-encoder-400m", loss="rlcd")
@@ -145,14 +145,22 @@ model = EncoderModel("jhu-clsp/ettin-encoder-400m", loss="rlcd")
 | parameter | default | meaning |
 |---|---|---|
 | `rlcd_weight` | 1.0 | weight of the added term; 0 is plain `soft-ce` |
-| `rlcd_samples` | 8 | noisy copies per question |
-| `rlcd_noise` | 1.0 | size of the noise added to the scores |
-| `rlcd_spherical` | 1.5 | weight of the spherical score next to the log score |
+| `rlcd_samples` | 4 | noisy copies per question |
+| `rlcd_noise` | 0.4 | size of the noise added to the scores at the start of training |
+| `rlcd_noise_end` | 0.1 | size of the noise at the end of training |
+| `rlcd_spherical` | 0.75 | weight of the spherical score next to the log score |
 
 - It changes training only: validation loss, early stopping and predictions work as before.
 - Each step costs a little more, mainly in the head; the backbone runs once per step either way.
-- It is experimental: the defaults are starting points, and whether it beats `soft-ce` on your
-  data is worth checking with `evaluate`, comparing `ece`, `log_loss` and `accuracy`.
+- Keep the noise small. Averaging a softmax over large noise flattens it, so with large noise
+  the term rewards scores sharper than the labels and teaches over-confidence. In 0.5.0 the noise
+  was a fixed 1.0, and Ettin-encoder-400m on typed-decisions reached 0.64 accuracy against 0.80
+  with `soft-ce`.
+- Measured with 0.5.1 on typed-decisions, Ettin-encoder-400m, 10 epochs, one seed: `rlcd` 0.796
+  accuracy against `soft-ce`'s 0.803, and the same validation ECE (0.17). On that data it doesn't
+  improve on `soft-ce`, which stays the default.
+- It is experimental: whether it beats `soft-ce` on your data is worth checking with `evaluate`,
+  comparing `ece`, `log_loss` and `accuracy`.
 
 ## Score questions and level order
 
