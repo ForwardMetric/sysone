@@ -112,7 +112,9 @@ def test_model_classes_show_every_parameter(klass):
     (dict(tuning="head", lora_layers=4), ValueError, "needs tuning='lora'"),
     (dict(tuning="qlora", trainable_layers=2), ValueError, "quantized"),
     (dict(tuning="head", layout="diagonal"), ValueError, "layout must be one of"),
-    (dict(tuning="head", head="full"), NotImplementedError, "head='full'"),
+    (dict(tuning="head", head_loops=0), ValueError, "head_loops must be a positive integer"),
+    (dict(tuning="head", head_loops=3, head_layers=0), ValueError, "no layers to loop"),
+    (dict(tuning="head", head="full", cache_features=True), ValueError, "head='full'"),
     (dict(tuning="head", batch_size=0), ValueError, "batch_size"),
 ])
 def test_invalid_configurations_fail_before_loading(params, error, message):

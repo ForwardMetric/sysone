@@ -164,10 +164,11 @@ DecoderModel(
     quant_type="nf4",           # qlora only
 
     # decision head
-    head="compact",             # "compact" | "full" (see Decision heads)
-    head_layers=2,
+    head="compact",             # what the head reads: "compact" | "full" (see Decision heads)
+    head_layers=2,              # self-attention layers, run once per loop
     head_dim="auto",            # "auto" = half the backbone's hidden size
     head_dropout=0.0,
+    head_loops=1,               # how many times the head runs its layers, with the same weights
 
     # optimization
     optimizer="adamw",          # "adamw" | "adamw_8bit" | "sgd"
@@ -498,22 +499,41 @@ The architecture gives the head one vector per option and one summary vector. Th
 them in fp32 and runs the head in fp32 even under autocast, because half-precision logits are too
 coarse for a stable loss.
 
-**`compact` (default)** works on `C + 2` vectors, not the whole sequence:
+Two settings shape the head, and they are independent: `head` says **what the head reads**, and
+`head_loops` says **how many times it runs**.
+
+**`compact` (default)** reads `C + 2` distilled vectors, not the whole sequence:
 1. Builds `[type embedding, option vectors…, summary vector]` and normalises it.
 2. Runs `head_layers` pre-norm self-attention blocks of width `head_dim`. Padded option slots are
    masked out. There is no positional encoding, so the options are treated as a set.
 3. Scores each option as the scaled dot product of a projection of the summary vector and a
    projection of the option vector. This works for any number of options.
 
-**`full`** works on every token:
-1. Adds the type embedding to every token's hidden state.
-2. Runs a small `nn.TransformerEncoder` (`head_layers`, no positional encoding) over the whole
-   sequence.
-3. Gathers the vectors at the option read positions and scores each with an MLP.
+**`full`** reads the same distilled vectors plus the **context**: every token's vector from the
+backbone, projected to `head_dim` and normalised once. Before its self-attention blocks, each
+loop lets the distilled vectors read the context through one pre-norm cross-attention layer, so
+every loop can pick up evidence from the text that the last one didn't use. There is no
+positional encoding in the head: reordering the options only reorders their tokens in the
+context, which attention ignores, so the parallel layout's order independence still holds.
 
-`compact` is much cheaper and is the default for both architectures. `full` lets every token
-attend to every other again, which can help on top of a causal backbone and keeps compatibility
-with checkpoints trained that way.
+**`head_loops`** runs step 2 (and, for `full`, the cross-attention before it) that many times
+with the same weights: more loops are more computation, not more parameters, which is the
+difference from more `head_layers`. No loop index is fed in, so a model can predict with more
+loops than it trained with. With `compact` a loop can only refine what the distilled vectors
+already hold; with `full` it can also read again. `head_loops=1` with `compact` is exactly the
+head sysone had before loops.
+
+**Training with loops.** Every loop's output is scored. The training loss is the weighted mean of
+the loops' losses, loop `i` (from 1) weighted by `i / (L(L+1)/2)`: the weights sum to 1, so the
+loss scale doesn't change with the number of loops, and later loops count more, so the first
+isn't pushed to be the final answer by itself. Backpropagation runs through every loop (no
+gradient is cut between loops), so earlier loops learn to produce what later ones can improve.
+The shared weights' gradient is the sum over loops; it is not divided by `L`, since AdamW scales
+each weight's update by its own gradient history anyway. Validation, calibration and predictions
+read the last loop. `head_loops` can be changed after training (`set_params`) to measure accuracy
+against loops.
+
+`compact` with one loop is the cheapest head and the default for both architectures.
 
 ### Training
 
@@ -566,8 +586,12 @@ can then be used or saved, and a later `fit` resumes from the last completed ste
   without running the backbone again.
 
 Caching applies when the backbone is frozen, the head is `compact` and options are not shuffled.
-The `full` head needs every token's vector, which is too large to cache. If the cache would not
-fit in memory, the backbone is run again each epoch instead.
+`head_loops` doesn't matter: a looped compact head still reads only the cached vectors. The
+`full` head reads every token's vector, which is too large to cache, so with `head="full"` the
+frozen backbone runs on every training step, without gradients and in eval mode
+(`cache_features=True` is an error). At prediction the backbone and the head run together on
+each batch, so the token vectors never leave the device. If the cache would not fit in memory,
+the backbone is run again each epoch instead.
 
 **Backbone that learns (`"lora"`, `"qlora"`, `"full"`).**
 - Weights being trained (adapters, fully trained layers, embeddings) are kept in fp32 for the
@@ -1204,6 +1228,81 @@ concurrent async requests. Its response schema is where the `/v1/models` shape a
 locations above come from: the design first guessed an OpenAI-style model list and locations
 without the type.
 
+### Milestone 6: heads that think in loops
+
+**Goal:** more accuracy from the same base model, by giving the decision head more computation
+per decision instead of more parameters. Measured on typed-decisions with Ettin-encoder-400m,
+whose best run is 0.8025 (soft-ce, full tuning, one seed).
+
+**Why the head.** About 18% of typed-decisions test questions have the raters' top two answers
+within 10 points, so the practical ceiling is likely in the mid 0.80s, not 1.0. A small encoder
+can't reason in steps the way a decoder can, but a head that runs several times can: each loop
+can weigh the options against each other again and, if it reads the text, look for evidence it
+missed. The head is small, so loops are cheap next to the backbone.
+
+**Scope:**
+1. **`head` decides what the head reads:** `"compact"` (the distilled vectors, as before) or
+   `"full"` (those plus every token's vector). `"full"` was reserved but never built, and its
+   earlier sketch (self-attention over the whole sequence, an MLP per option) is replaced by the
+   design in Decision heads.
+2. **`head_loops`** (default 1) runs the head's layers that many times with shared weights, for
+   either head. Every loop is scored in training, later loops weighted more; predictions read the
+   last loop; the number can be changed after training. It joins the run fingerprint only when
+   it isn't 1, so earlier checkpoints resume.
+3. **`head="full"` with a frozen backbone** runs the backbone every step instead of caching, and
+   predicts with the backbone and head together.
+
+**Gradients.** The loss over loops averages to the scale of one loop, backpropagation runs through
+every loop, and the shared weights' gradient is not rescaled (see Decision heads). One thing to
+check by measurement rather than design: `grad_clip` clips the norm of all gradients together,
+so if the head's share grows with loops, the backbone's updates shrink. If that happens, the head
+and the backbone get clipped separately.
+
+**Measurement.** One 2×2, so the two effects separate:
+
+| | 1 loop | 3 loops |
+|---|---|---|
+| `compact` | the current head | iterating alone |
+| `full` | reading the context alone | reading and iterating |
+
+- On Ettin-encoder-150m first (quicker), 3 seeds each, compared question by question against
+  `compact` with one loop on the same seeds.
+- The curve: models trained with 3 loops predict with 1 to 6. If accuracy rises with loops, the
+  loops are doing work; if it's flat, any gain comes from reading the context.
+- Broken down by question type and by the raters' margin.
+- The winner is confirmed on Ettin-encoder-400m with 3 seeds. It becomes a default only with
+  about a point or more on average across seeds and a rising curve.
+
+**First check (Ettin-encoder-17m, local).** 3,000 typed-decisions training records, full tuning,
+3 epochs, seed 0, scored as the leaderboard does on 500 test records:
+
+| | test accuracy | KL | best validation loss | accuracy predicting with 1 → 6 loops |
+|---|---|---|---|---|
+| `compact` × 1 | 0.554 | 0.267 | 1.0670 | |
+| `compact` × 3 | 0.569 | 0.260 | 1.0525 | 0.571, 0.571, 0.569, 0.569, 0.570, 0.570 |
+| `full` × 1 | 0.538 | 0.271 | 1.0731 | |
+| `full` × 3 | 0.544 | 0.266 | 1.0656 | 0.547, 0.544, 0.544, 0.543, 0.544, 0.543 |
+
+- Both curves are flat: once trained, predicting with more loops changes nothing, so on this model
+  the loops don't add thinking at prediction. `compact` × 3's gain over `compact` × 1 comes from
+  training with loops (every loop scored), not from running them.
+- Reading the context didn't help a model this small.
+- The head's share of the gradient norm stayed at 5–6% in every configuration, so clipping all
+  gradients together is fine; no separate clipping is needed.
+- Every run took 6.4–6.7 minutes: neither loops nor the context cost noticeable time.
+- One seed and a tiny backbone: the 150m and 400m runs with 3 seeds decide.
+
+**Tests:** both heads with 1 and several loops, fitted, saved, loaded and predicting the same on
+the tiny encoder and decoder; every loop gives an answer and the last is the prediction; the
+training loss is the loops' weighted mean; changing `head_loops` after training; the full head's
+answers don't depend on option or token order; a frozen backbone stays frozen under `full`;
+validation of `head_loops` and of `cache_features=True` with `full`; the fingerprint only
+changes when `head_loops` isn't 1.
+
+**Not in scope:** stopping early on easy questions (adaptive halting); looping the backbone's
+top layers; marking each option's own tokens for its cross-attention. The loops curve decides
+whether any is worth building.
+
 ## Open items
 
 - Whether bitsandbytes supports 4-bit training on Apple Silicon yet needs checking. If it does,
@@ -1211,4 +1310,4 @@ without the type.
 - A state-first causal layout, which would let one state's cache be shared across its questions,
   could be added as a speed option.
 - Importing checkpoints trained by other tools needs their head, prompt format and type order.
-  The `full` head and the saved prompt format are what make that possible.
+  The saved prompt format makes part of that possible; their heads would need their own classes.

@@ -40,11 +40,11 @@ def _interrupt_after(monkeypatch, calls: int):
     """Raise KeyboardInterrupt from the `calls`-th forward pass (training or validation)."""
     forward, count = Network.forward, {"n": 0}
 
-    def interrupting(self, items):
+    def interrupting(self, items, **kwargs):
         count["n"] += 1
         if count["n"] == calls:
             raise KeyboardInterrupt
-        return forward(self, items)
+        return forward(self, items, **kwargs)
 
     monkeypatch.setattr(Network, "forward", interrupting)
 

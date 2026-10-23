@@ -40,7 +40,7 @@ from .data import Example, examples_from
 from .encoding import Encoder, measure_limits
 from .evaluation import score, scored_items, thresholds_for_accuracy
 from .features import cache_bytes, collate_features, extract
-from .heads import CompactHead
+from .heads import HEAD_CLASSES
 from .layout import LAYOUTS, Encoded
 from .losses import LOSSES
 from .prompts import PromptFormat
@@ -99,6 +99,9 @@ _ADAPTER_PARAMS = ("lora_rank", "lora_alpha", "lora_dropout", "lora_targets", "q
 _RUN_PARAMS = ("batch_size", "validation_fraction", "validation_interval", "seed", "balance", "optimizer",
                "scheduler", "warmup_ratio", "backbone_lr", "head_lr", "weight_decay", "grad_clip",
                "shuffle_options", "label_smoothing", "ordinal_weight")
+# Added to the run settings only when not 1, so runs with one loop keep the fingerprint they had
+# before head_loops existed and earlier checkpoints still resume.
+_LOOP_PARAMS = ("head_loops",)
 # Added to the run settings only with loss="rlcd", so soft-ce runs keep the fingerprint they had
 # before rlcd existed and earlier checkpoints still resume.
 _RLCD_PARAMS = ("loss", "rlcd_weight", "rlcd_samples", "rlcd_noise", "rlcd_noise_end", "rlcd_spherical")
@@ -191,10 +194,18 @@ class SystemOneModel:
     quant_type : {"nf4", "fp4"}, default="nf4"
         ``tuning="qlora"`` with 4 bits only: the 4-bit number format.
     head : {"compact", "full"}, default="compact"
-        The decision head. ``"compact"`` reads one vector per option and a summary vector.
-        ``"full"`` is designed but not implemented yet.
+        What the decision head reads. ``"compact"``: one vector per option and a summary vector.
+        ``"full"``: those, plus every token's vector (the context), which the head reads again
+        on every loop. ``"full"`` runs the backbone on every training step, so with
+        ``tuning="head"`` its features aren't cached.
     head_layers : int, default=2
-        Layers in the decision head.
+        Self-attention layers in the decision head, run once per loop.
+    head_loops : int, default=1
+        How many times the head runs its layers, with the same weights: more loops are more
+        computation, not more parameters. Each loop builds on the last; with ``head="full"``
+        each one also reads the context again. While training, every loop's answer is scored
+        and later loops count more; predictions use the last loop. Can be changed after
+        training, with :meth:`set_params`, to predict with more or fewer loops.
     head_dim : int or "auto", default="auto"
         Hidden size of the decision head. ``"auto"`` is half the backbone's hidden size.
     head_dropout : float, default=0.0
@@ -383,6 +394,7 @@ class SystemOneModel:
         head_layers: int = 2,
         head_dim="auto",
         head_dropout: float = 0.0,
+        head_loops: int = 1,
         # optimization
         optimizer: str = "adamw",
         backbone_lr="auto",
@@ -445,6 +457,7 @@ class SystemOneModel:
         self.head_layers = head_layers
         self.head_dim = head_dim
         self.head_dropout = head_dropout
+        self.head_loops = head_loops
         self.optimizer = optimizer
         self.backbone_lr = backbone_lr
         self.head_lr = head_lr
@@ -642,6 +655,14 @@ class SystemOneModel:
                              % (self.rlcd_samples,))
         if self.cache_features not in ("auto", True, False):
             raise ValueError("cache_features must be 'auto', True or False, got %r" % (self.cache_features,))
+        if isinstance(self.head_loops, bool) or not isinstance(self.head_loops, int) or self.head_loops < 1:
+            raise ValueError("head_loops must be a positive integer, got %r" % (self.head_loops,))
+        if self.head_loops > 1 and self.head == "compact" and self.head_layers == 0:
+            raise ValueError("head_loops=%d does nothing with head='compact' and head_layers=0: there are no "
+                             "layers to loop" % self.head_loops)
+        if self.head == "full" and self.cache_features is True:
+            raise ValueError("cache_features=True can't be used with head='full': it reads every token's vector, "
+                             "which is too large to cache")
         if self.tuning in ("head", "full") and self.lora_layers not in (None, 0):
             raise ValueError("lora_layers=%r needs tuning='lora' or 'qlora', not %r" % (self.lora_layers, self.tuning))
         if self.tuning == "qlora" and self.trainable_layers not in (None, 0):
@@ -662,10 +683,6 @@ class SystemOneModel:
         if self.cache_dir is not None and self.tuning != "head":
             warnings.warn("cache_dir is ignored with tuning=%r: features can only be cached when the backbone "
                           "is frozen (tuning='head')" % (self.tuning,), UserWarning, stacklevel=3)
-
-        # Not implemented yet in this version.
-        if self.head != "compact":
-            raise NotImplementedError("head=%r is not implemented yet; use head='compact'" % (self.head,))
 
     # -- building ------------------------------------------------------------------------------
 
@@ -743,7 +760,8 @@ class SystemOneModel:
             self.max_state_tokens, self.max_option_tokens)
         hidden = self.backbone_.config.hidden_size
         self.head_dim_ = max(1, hidden // 2) if self.head_dim == "auto" else self.head_dim
-        self.head_ = CompactHead(hidden, self.head_dim_, self.head_layers, self.head_dropout).to(self.device_)
+        self.head_ = HEAD_CLASSES[self.head](hidden, self.head_dim_, self.head_layers,
+                                             self.head_dropout).to(self.device_)
         self.temperatures_ = {t: 1.0 for t in QUESTION_TYPES}
         self.temperatures_by_options_ = {}
         self.history_ = []
@@ -789,7 +807,8 @@ class SystemOneModel:
             h.update(json.dumps([ex.state, ex.qid, q.type, q.instructions, list(q.keys), list(q.texts), ex.target,
                                  ex.category], default=str).encode())
         params = self.get_params()
-        keys = _RUN_PARAMS + (_RLCD_PARAMS if self.loss == "rlcd" else ())
+        keys = _RUN_PARAMS + (_LOOP_PARAMS if self.head_loops != 1 else ()) \
+            + (_RLCD_PARAMS if self.loss == "rlcd" else ())
         h.update(json.dumps({k: params[k] for k in keys}, sort_keys=True, default=str).encode())
         return h.hexdigest()
 
@@ -919,8 +938,10 @@ class SystemOneModel:
         shuffle = set(self._shuffle_types())
         hidden = self.backbone_.config.hidden_size
         n_vectors = sum(ex.question.k + 1 for ex in examples)
+        # the backbone runs every step when it learns, or when the head reads the context
+        runs_backbone = plan.learns or self.head_.reads_context
         cache = self.cache_features
-        if plan.learns:
+        if runs_backbone:
             cache = False
         elif cache == "auto":
             cache = not shuffle and cache_bytes(n_vectors, hidden) <= CACHE_LIMIT_BYTES
@@ -928,7 +949,7 @@ class SystemOneModel:
             raise ValueError("cache_features=True can't be used while options are shuffled (shuffle_options=%r)"
                              % (self.shuffle_options,))
         disk = None
-        if self.cache_dir is not None and not plan.learns:
+        if self.cache_dir is not None and not runs_backbone:
             if cache:
                 disk = self._disk_cache()
             else:
@@ -945,24 +966,24 @@ class SystemOneModel:
                 target = ex.target if order is None else [ex.target[i] for i in order]
                 encoded.append(encoder.encode(ex.state, ex.question, order))
                 items_meta.append((ex.question.type_index, torch.tensor(target, dtype=torch.float32)))
-            inputs = encoded if plan.learns else self._features(encoded, disk if rng is None else None)
+            inputs = encoded if runs_backbone else self._features(encoded, disk if rng is None else None)
             return [TrainItem(x, qtype, target) for x, (qtype, target) in zip(inputs, items_meta)]
 
         val_items = items_for(val_ex, None)
-        reuse = cache or (plan.learns and not shuffle)
+        reuse = cache or (runs_backbone and not shuffle)
         cached: list[TrainItem] | None = None
 
         def train_items(epoch: int) -> list[TrainItem]:
             nonlocal cached
             if reuse:
                 if cached is None:
-                    if not plan.learns:
+                    if not runs_backbone:
                         self._log("computing backbone features once for %d questions" % len(train_ex))
                     cached = items_for(train_ex, None)
                 return cached
             return items_for(train_ex, random.Random(self.seed + epoch) if shuffle else None)
 
-        micro = START_MICRO_BATCH if plan.learns else self.batch_size
+        micro = START_MICRO_BATCH if runs_backbone else self.batch_size
         if plan.learns:
             rates = self._learning_rates()
             self._log("learning rates: head %g, %s" % (rates["head"], ", ".join(
@@ -999,7 +1020,8 @@ class SystemOneModel:
             else:
                 self._log("warm start (no saved training state): training %d epochs" % self.epochs)
 
-        net = Network(self.head_, self.device_, backbone=self.backbone_ if plan.learns else None,
+        net = Network(self.head_, self.device_, backbone=self.backbone_ if runs_backbone else None,
+                      backbone_learns=plan.learns, loops=self.head_loops,
                       arch=self.architecture_, pad_id=self.tokenizer_.pad_token_id, backbone_groups=backbone_groups,
                       autocast_dtype=self._autocast_dtype(), ordinal_weight=float(self.ordinal_weight),
                       loss=self.loss, rlcd={"weight": float(self.rlcd_weight), "samples": int(self.rlcd_samples),
@@ -1311,23 +1333,42 @@ class SystemOneModel:
             return [], []
         encoder = self._encoder()
         encoded = [encoder.encode(ex.state, ex.question) for ex in examples]
-        feats = extract(self.architecture_, self.backbone_, encoded, self.tokenizer_.pad_token_id, self.device_,
-                        self._autocast_dtype())
-        probs = self._probabilities(feats, [ex.question.type_index for ex in examples], calibrated)
+        qtypes = [ex.question.type_index for ex in examples]
+        if self.head_.reads_context:
+            probs = self._probabilities_with_context(encoded, qtypes, calibrated)
+        else:
+            feats = extract(self.architecture_, self.backbone_, encoded, self.tokenizer_.pad_token_id, self.device_,
+                            self._autocast_dtype())
+            probs = self._probabilities(feats, qtypes, calibrated)
         return probs, [len(e.input_ids) for e in encoded]
+
+    def _temperatures_for(self, qtypes, sizes, calibrated: bool) -> list[float]:
+        by_options = getattr(self, "temperatures_by_options_", {})
+        return [temperature(self.temperatures_, by_options, QUESTION_TYPES[q], k) if calibrated else 1.0
+                for q, k in zip(qtypes, sizes)]
+
+    @torch.no_grad()
+    def _probabilities_with_context(self, encoded: list[Encoded], qtypes, calibrated: bool = True) -> list[list[float]]:
+        """Probabilities from a head that reads the context: the backbone and the head run together
+        on each batch, so every token's vector stays on the device."""
+        net = Network(self.head_, self.device_, backbone=self.backbone_, arch=self.architecture_,
+                      pad_id=self.tokenizer_.pad_token_id, autocast_dtype=self._autocast_dtype(),
+                      loops=self.head_loops, backbone_learns=False)
+        items = [TrainItem(e, q, torch.zeros(len(e.read_positions))) for e, q in zip(encoded, qtypes)]
+        logits = collect_logits(net, items)
+        temps = self._temperatures_for(qtypes, [len(x) for x in logits], calibrated)
+        return [torch.softmax(x / t, dim=-1).tolist() for x, t in zip(logits, temps)]
 
     @torch.no_grad()
     def _probabilities(self, feats, qtypes, calibrated: bool = True, batch_size: int = 256) -> list[list[float]]:
         self.head_.eval()
-        by_options = getattr(self, "temperatures_by_options_", {})
-        temps = [temperature(self.temperatures_, by_options, QUESTION_TYPES[q], f.options.shape[0])
-                 if calibrated else 1.0 for f, q in zip(feats, qtypes)]
+        temps = self._temperatures_for(qtypes, [f.options.shape[0] for f in feats], calibrated)
         out = []
         for start in range(0, len(feats), batch_size):
             options, mask, summary = collate_features(feats[start: start + batch_size], self.device_)
             qtype = torch.tensor(qtypes[start: start + batch_size], dtype=torch.long, device=self.device_)
             temp = torch.tensor(temps[start: start + batch_size], device=self.device_)
-            logits = self.head_(options, mask, summary, qtype) / temp[:, None]
+            logits = self.head_(options, mask, summary, qtype, loops=self.head_loops) / temp[:, None]
             out.extend(torch.softmax(logits, dim=-1).cpu().tolist())
         return out
 
@@ -1538,7 +1579,8 @@ class SystemOneModel:
         model.max_option_tokens_ = fitted["max_option_tokens"]
         model.max_len_ = fitted["max_len"]
         model.head_dim_ = fitted["head_dim"]
-        head = CompactHead(fitted["hidden_size"], fitted["head_dim"], model.head_layers, model.head_dropout)
+        head = HEAD_CLASSES[model.head](fitted["hidden_size"], fitted["head_dim"], model.head_layers,
+                                        model.head_dropout)
         state = load_file(str(path / HEAD_FILE))
         state["type_embedding.weight"] = _reorder_types(state["type_embedding.weight"], config["type_names"])
         head.load_state_dict(state)

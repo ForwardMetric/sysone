@@ -131,6 +131,9 @@ Only questions not in the cache are computed. The folder stays under `cache_max_
 default) by deleting the least recently used sets; {func}`~sysone.cache_info` lists them and
 {func}`~sysone.clear_cache` deletes them.
 
+The cache holds one vector per option and a summary vector. `head="full"` reads every token's
+vector, which is too large to cache, so with it the backbone runs on every step.
+
 ## The training objective: `loss="rlcd"` (experimental)
 
 By default sysone minimises cross-entropy against the labels (`loss="soft-ce"`). `loss="rlcd"`
@@ -163,6 +166,36 @@ model = SystemOneModel("jhu-clsp/ettin-encoder-400m", loss="rlcd")
   improve on `soft-ce`, which stays the default.
 - It is experimental: whether it beats `soft-ce` on your data is worth checking with `evaluate`,
   comparing `ece`, `log_loss` and `accuracy`.
+
+## The decision head: `head` and `head_loops` (experimental)
+
+The decision head turns the backbone's output into one score per option. Two settings shape it:
+
+- `head` is **what the head reads**. `"compact"` (the default) reads one vector per option and a
+  summary vector. `"full"` reads those plus every token's vector, the context, so the head can
+  look back at the text.
+- `head_loops` is **how many times the head runs**, reusing the same weights each time. Each loop
+  builds on the last: the options are weighed against each other again and, with `"full"`, the
+  text is read again. More loops add computation, not parameters.
+
+```python
+model = EncoderModel("jhu-clsp/ettin-encoder-400m", head="full", head_loops=3)
+```
+
+- While training, every loop gives an answer and is scored, later loops counting more; the
+  prediction is the last loop's.
+- `head_loops` can change after training, which shows whether the extra loops help:
+
+  ```python
+  for loops in range(1, 7):
+      model.set_params(head_loops=loops)
+      print(loops, model.evaluate(test)["overall"]["accuracy"])
+  ```
+
+- `head="full"` costs more per step than `"compact"`, and with `tuning="head"` the backbone runs on
+  every step instead of once (see the feature cache above).
+- `head="compact", head_loops=1` is the head sysone has always used. Whether loops or the full
+  head beat it is being measured; compare with `evaluate` on your data.
 
 ## Score questions and level order
 

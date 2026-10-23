@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased (0.6.0)
+
+Heads that think in loops.
+
+- **`head="full"`** is implemented: the decision head reads every token's vector (the context)
+  as well as the option and summary vectors, so it can look back at the text. With
+  `tuning="head"` the backbone runs on every step instead of being cached.
+- **`head_loops`** (default 1) runs the head's layers that many times with the same weights, for
+  either head: more computation per decision, not more parameters. Every loop is scored in
+  training, later loops counting more, and the number can change after training with
+  `set_params`. Models and checkpoints from earlier versions are unaffected.
+  See [the decision head](user_guide/training.md#the-decision-head-head-and-head_loops-experimental).
+
 ## 0.5.2
 
 Documentation; no change to the library.

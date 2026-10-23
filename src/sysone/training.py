@@ -91,13 +91,22 @@ class Network:
     """The trained parts of the model: the head, and the backbone when it learns.
 
     With `backbone=None` items carry cached `Features`; otherwise they carry `Encoded` layouts,
-    run through the backbone under autocast to `autocast_dtype`.
+    run through the backbone under autocast to `autocast_dtype`. A head that reads the context
+    (`head="full"`) needs the backbone even when it is frozen (`backbone_learns=False`): it then
+    runs without gradients and in eval mode.
+
+    The head runs `loops` times. While training with more than one loop, the loss is a weighted
+    mean of every loop's loss, loop `i` weighted by `i`, so each loop learns to give an answer and
+    the last counts most; validation reads the last loop.
     """
 
     def __init__(self, head: nn.Module, device: torch.device, backbone: nn.Module | None = None, arch=None,
                  pad_id: int = 0, backbone_groups: dict | None = None, autocast_dtype: torch.dtype | None = None,
-                 ordinal_weight: float = 0.0, loss: str = "soft-ce", rlcd: dict | None = None):
+                 ordinal_weight: float = 0.0, loss: str = "soft-ce", rlcd: dict | None = None,
+                 loops: int = 1, backbone_learns: bool = True):
         self.head = head
+        self.loops = loops
+        self.backbone_learns = backbone_learns
         self.ordinal_weight = ordinal_weight
         self.loss = loss
         self.rlcd = rlcd or {}
@@ -118,38 +127,51 @@ class Network:
     def train(self, mode: bool = True) -> None:
         self.head.train(mode)
         if self.backbone is not None:
-            self.backbone.train(mode)
+            self.backbone.train(mode and self.backbone_learns)
 
-    def forward(self, items: Sequence[TrainItem]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """`(logits [B, K], option_mask [B, K], target [B, K])` for a batch of items."""
+    def forward(self, items: Sequence[TrainItem], all_loops: bool = False):
+        """`(logits [B, K], option_mask [B, K], target [B, K])` for a batch of items; with
+        `all_loops`, the first is a list of every loop's logits."""
         qtype = torch.tensor([it.qtype for it in items], dtype=torch.long, device=self.device)
+        context = context_mask = None
         if self.backbone is None:
             options, mask, summary = collate_features([it.inputs for it in items], self.device)
         else:
             batch = {k: v.to(self.device) for k, v in collate([it.inputs for it in items], self.pad_id).items()}
-            with autocast(self.device, self.autocast_dtype):
+            with torch.set_grad_enabled(torch.is_grad_enabled() and self.backbone_learns), \
+                    autocast(self.device, self.autocast_dtype):
                 hidden = self.arch.hidden_states(self.backbone, batch)
             options, summary = read_vectors(hidden, batch)
             mask = batch["option_mask"]
+            if self.head.reads_context:
+                context, context_mask = hidden, batch["real"]
         target = torch.zeros(mask.shape, dtype=torch.float32)
         for i, it in enumerate(items):
             target[i, : it.target.shape[0]] = it.target
-        return self.head(options, mask, summary, qtype), mask, target.to(self.device)
+        logits = self.head(options, mask, summary, qtype, context, context_mask, loops=self.loops, all_loops=all_loops)
+        return logits, mask, target.to(self.device)
 
     def objective(self, items: Sequence[TrainItem]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """`(loss per row, logits, target)`: soft cross-entropy, plus the ranked-probability term on
         score questions. With `loss="rlcd"` the scoring-rule policy gradient is added while
         training only, so validation loss (which early stopping reads) stays deterministic and
-        comparable across losses."""
-        logits, mask, target = self.forward(items)
-        ordinal = torch.tensor([it.qtype == TYPE_INDEX["score"] for it in items], device=logits.device)
-        if self.loss == "rlcd" and self.head.training:
-            settings = dict(self.rlcd)
-            settings["noise"] = rlcd_noise_at(self.progress, settings["noise"], settings.pop("noise_end"))
-            rows = rlcd_loss(logits, target, mask, ordinal, self.ordinal_weight, **settings)
-        else:
-            rows = decision_loss(logits, target, mask, ordinal, self.ordinal_weight)
-        return rows, logits, target
+        comparable across losses. While training with several loops the loss is the loops'
+        weighted mean; the logits returned are the last loop's."""
+        training = self.head.training
+        every, mask, target = self.forward(items, all_loops=True)
+        ordinal = torch.tensor([it.qtype == TYPE_INDEX["score"] for it in items], device=every[-1].device)
+        if not training:
+            every = every[-1:]
+        weights = loop_weights(len(every))
+        rows = 0
+        for weight, logits in zip(weights, every):
+            if self.loss == "rlcd" and training:
+                settings = dict(self.rlcd)
+                settings["noise"] = rlcd_noise_at(self.progress, settings["noise"], settings.pop("noise_end"))
+                rows = rows + weight * rlcd_loss(logits, target, mask, ordinal, self.ordinal_weight, **settings)
+            else:
+                rows = rows + weight * decision_loss(logits, target, mask, ordinal, self.ordinal_weight)
+        return rows, every[-1], target
 
     def snapshot(self) -> dict[str, torch.Tensor]:
         return {n: p.detach().to("cpu", torch.float32, copy=True) for n, p in self.named_trainable()}
@@ -158,6 +180,13 @@ class Network:
     def restore(self, weights: dict[str, torch.Tensor]) -> None:
         for name, p in self.named_trainable():
             p.copy_(weights[name])
+
+
+def loop_weights(loops: int) -> list[float]:
+    """Weights of each loop's loss in training: loop `i` (from 1) gets `i`, normalised to sum to 1,
+    so the loss scale doesn't change with the number of loops and later loops count more."""
+    total = loops * (loops + 1) / 2
+    return [(i + 1) / total for i in range(loops)]
 
 
 def _length(item: TrainItem) -> int:

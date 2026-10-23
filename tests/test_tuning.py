@@ -156,10 +156,10 @@ def test_out_of_memory_halves_the_forward_batch(tiny_models, monkeypatch):
     reference = _model("qwen3", tiny_models["qwen3"], tuning="lora", epochs=1).fit(rows)
     forward = Network.forward
 
-    def limited(self, items):
+    def limited(self, items, **kwargs):
         if self.backbone is not None and self.backbone.training and len(items) > 2:
             raise torch.OutOfMemoryError("CUDA out of memory (simulated)")
-        return forward(self, items)
+        return forward(self, items, **kwargs)
 
     monkeypatch.setattr(Network, "forward", limited)
     model = _model("qwen3", tiny_models["qwen3"], tuning="lora", epochs=1).fit(rows)

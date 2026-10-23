@@ -14,6 +14,7 @@ it.
 | [Hard labels, ModernBERT](examples/encoder_bev_decision.ipynb) · [Colab][c-enc-bev] | bev-decision-150K | ModernBERT-base (encoder), head and full | GPU recommended |
 | [Measuring `ordinal_weight`](examples/encoder_typed_decisions_ordinal_weight.ipynb) · [Colab][c-ordinal] | typed-decisions | ModernBERT-base, full | about an hour on an L4 |
 | [Larger encoders](examples/encoder_typed_decisions_larger_encoders.ipynb) · [Colab][c-larger] | typed-decisions, scored as its leaderboard does | mmBERT-base, ModernBERT-large and Ettin-400m, full | about 2.5 hours on an L4 |
+| [Heads that think in loops](examples/encoder_typed_decisions_head_loops.ipynb) · [Colab][c-loops] | typed-decisions, scored as its leaderboard does | Ettin-150m and Ettin-400m, `head` × `head_loops`, 3 seeds | about 11 hours on an L4 |
 
 [c-quickstart]: https://colab.research.google.com/github/ForwardMetric/sysone/blob/main/examples/quickstart.ipynb
 [c-dec-typed]: https://colab.research.google.com/github/ForwardMetric/sysone/blob/main/examples/decoder_typed_decisions.ipynb
@@ -22,6 +23,7 @@ it.
 [c-enc-bev]: https://colab.research.google.com/github/ForwardMetric/sysone/blob/main/examples/encoder_bev_decision.ipynb
 [c-ordinal]: https://colab.research.google.com/github/ForwardMetric/sysone/blob/main/examples/encoder_typed_decisions_ordinal_weight.ipynb
 [c-larger]: https://colab.research.google.com/github/ForwardMetric/sysone/blob/main/examples/encoder_typed_decisions_larger_encoders.ipynb
+[c-loops]: https://colab.research.google.com/github/ForwardMetric/sysone/blob/main/examples/encoder_typed_decisions_head_loops.ipynb
 
 ```{toctree}
 :hidden:
@@ -33,4 +35,5 @@ Hard labels, Qwen3 <examples/decoder_bev_decision>
 Hard labels, ModernBERT <examples/encoder_bev_decision>
 Measuring ordinal_weight <examples/encoder_typed_decisions_ordinal_weight>
 Larger encoders <examples/encoder_typed_decisions_larger_encoders>
+Heads that think in loops <examples/encoder_typed_decisions_head_loops>
 ```
