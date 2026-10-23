@@ -1,13 +1,14 @@
 # 10 minutes to sysone
 
 A short tour for new users. It starts with a model that answers questions about support tickets,
-then adds one situation at a time: fine-tuning, many texts at once, labels that disagree, data in
-files, knowing when not to answer, picking a base model, long runs, saving and serving. Each step
-builds on the one before, and every code block runs as is, in order.
+then adds one situation at a time: fine-tuning, choosing what trains (LoRA, QLoRA, which layers,
+the decision head), many texts at once, labels that disagree, data in files, knowing when not to
+answer, picking a base model, long runs, saving and serving. Each step builds on the one before,
+and every code block runs as is, in order.
 
 The tour uses a tiny base model, [Ettin-encoder-17m](https://huggingface.co/jhu-clsp/ettin-encoder-17m)
-(about 70 MB), and synthetic tickets, so the whole tour runs in about two minutes on a laptop
-CPU, after a one-time download. It passes
+(about 70 MB), and synthetic tickets, so the whole tour runs in about four minutes on a
+laptop CPU, after a one-time download. It passes
 `device="cpu"` so that, with `seed=0`, you get the numbers shown here: some PyTorch operations on
 Apple's GPU (MPS) aren't deterministic, so the same seed can give different results there. Leave
 `device` out to use your GPU. For real work, use a larger base model on a GPU;
@@ -33,7 +34,8 @@ questions = {
              "criteria": ["sales", "operations", "servicing"]},
     "severity": {"type": "score", "instructions": "How severe is it?",
                  "criteria": ["none", "minor", "major", "critical"]},
-    "refund": {"type": "noul", "instructions": "Is the customer asking for a refund?"},
+    "refund": {"type": "noul",
+               "instructions": "Is the customer asking for a refund?"},
 }
 ```
 
@@ -54,32 +56,42 @@ reviewers who picked each team:
 ```python
 import random
 
-TOPICS = {"sales": ["a quote", "pricing", "a contract renewal", "a discount"],
-          "operations": ["a late delivery", "a tracking number", "the warehouse", "a missing parcel"],
-          "servicing": ["a broken unit", "a repair", "an exchange", "a faulty part"]}
-DISPUTED = {"a damaged delivery": {"operations": 0.7, "servicing": 0.3},
-            "an invoice for a repair": {"servicing": 0.7, "sales": 0.3},
-            "a delayed contract start": {"sales": 0.7, "operations": 0.3}}
+TOPICS = {
+    "sales": ["a quote", "pricing", "a contract renewal", "a discount"],
+    "operations": ["a late delivery", "a tracking number", "the warehouse",
+                   "a missing parcel"],
+    "servicing": ["a broken unit", "a repair", "an exchange", "a faulty part"],
+}
+DISPUTED = {
+    "a damaged delivery": {"operations": 0.7, "servicing": 0.3},
+    "an invoice for a repair": {"servicing": 0.7, "sales": 0.3},
+    "a delayed contract start": {"sales": 0.7, "operations": 0.3},
+}
 VAGUE = ["my account", "an earlier email", "my last order"]
-LEVELS = ["just a question", "a small issue", "a serious problem", "an emergency, everything is down"]
+LEVELS = ["just a question", "a small issue", "a serious problem",
+          "an emergency, everything is down"]
+REFUNDS = ["Please refund me.", "I want my money back.", "Can I get a refund?"]
 
 
 def ticket(rng):
     kind = rng.random()
-    if kind < 0.7:                                    # a clear topic: everyone agrees
+    if kind < 0.7:      # a clear topic: everyone agrees
         team = rng.choice(list(TOPICS))
         topic, votes = rng.choice(TOPICS[team]), {team: 1.0}
-    elif kind < 0.9:                                  # a disputed topic: 70% against 30%
+    elif kind < 0.9:    # a disputed topic: 70% against 30%
         topic = rng.choice(list(DISPUTED))
         votes = DISPUTED[topic]
-    else:                                             # a vague one: an even split
+    else:               # a vague one: an even split
         topic, votes = rng.choice(VAGUE), {t: 1 / 3 for t in TOPICS}
-    team = max(votes, key=votes.get) if max(votes.values()) > 0.5 else rng.choice(list(votes))
+    if max(votes.values()) > 0.5:
+        team = max(votes, key=votes.get)     # the majority vote
+    else:
+        team = rng.choice(list(votes))       # no majority: a random pick
     level = rng.randrange(len(LEVELS))
     refund = rng.random() < 0.4
     text = "Hello, this is about %s. It is %s." % (topic, LEVELS[level])
     if refund:
-        text += " " + rng.choice(["Please refund me.", "I want my money back.", "Can I get a refund?"])
+        text += " " + rng.choice(REFUNDS)
     return {"state": text, "questions": questions, "votes": votes,
             "expected": {"team": team, "severity": level, "refund": refund}}
 
@@ -118,7 +130,11 @@ frozen base model, which takes seconds.
 ```python
 from sysone import SystemOneModel
 
-model = SystemOneModel("jhu-clsp/ettin-encoder-17m", device="cpu", tuning="head", seed=0)
+model = SystemOneModel(
+    "jhu-clsp/ettin-encoder-17m",
+    tuning="head",
+    device="cpu", seed=0,
+)
 model.fit(train)
 print(type(model).__name__)
 ```
@@ -141,7 +157,8 @@ EncoderModel
 prints its progress. Ask it about a new ticket:
 
 ```python
-ticket_text = "Hello, this is about a missing parcel. It is an emergency, everything is down. I want my money back."
+ticket_text = ("Hello, this is about a missing parcel. "
+               "It is an emergency, everything is down. I want my money back.")
 pprint(model.predict(ticket_text, questions))
 ```
 
@@ -204,7 +221,11 @@ Training the base model's layers too (`tuning="full"`) is slower and more accura
 dataset and a larger model, do this on a GPU.
 
 ```python
-full = SystemOneModel("jhu-clsp/ettin-encoder-17m", device="cpu", tuning="full", epochs=4, seed=0, verbose=0)
+full = SystemOneModel(
+    "jhu-clsp/ettin-encoder-17m",
+    tuning="full", epochs=4,
+    device="cpu", seed=0, verbose=0,
+)
 full.fit(train)
 
 results["full"] = full.evaluate(test)
@@ -226,7 +247,8 @@ fall: the probabilities are sharper and still honest.
 
 ```python
 for check in full.history_[-3:]:
-    print(check["epoch"], round(check["val_loss"], 4), round(check["val_accuracy"], 4))
+    print(check["epoch"], round(check["val_loss"], 4),
+          round(check["val_accuracy"], 4))
 ```
 
 ```text
@@ -235,16 +257,106 @@ for check in full.history_[-3:]:
 4.0 0.0737 0.9667
 ```
 
+## Choosing what trains
+
+`tuning` is the main decision: how much of the base model learns.
+
+| `tuning` | what trains | use it for |
+|---|---|---|
+| `"head"` | only the decision head; the base model is frozen and its outputs are cached | a first check of the data and questions: seconds, even on a laptop |
+| `"lora"` | small adapter matrices on the top layers; the base model's own weights stay frozen | most of full tuning's accuracy in less memory |
+| `"qlora"` | the same adapters, with the frozen weights stored in 4 bits | the least memory, for large decoders; needs an NVIDIA GPU |
+| `"full"` | every layer | the best accuracy when there is enough data; encoders' default |
+
+Try LoRA. With `verbose` on, the first line of `fit` says what trains:
+
+```python
+lora = SystemOneModel(
+    "jhu-clsp/ettin-encoder-17m",
+    tuning="lora", epochs=4,
+    device="cpu", seed=0,
+)
+lora.fit(train)
+results["lora"] = lora.evaluate(test)
+```
+
+```text
+[sysone] loaded jhu-clsp/ettin-encoder-17m (modernbert, 7 of 7 layers, float32 on cpu); tuning=lora: adapters on 4 layers; max_state_tokens=24, max_option_tokens=3
+[sysone] 1620 training questions, 180 validation questions
+[sysone] learning rates: head 0.001, adapters 0.001
+[sysone] training from scratch: up to 4 epochs
+...
+[sysone] epoch 4/4  step 104  train_loss=0.0576  val_loss=0.1320  val_accuracy=0.9611
+[sysone] calibration: temperatures choice 0.967, score 0.5, noul 0.5; validation ECE 0.0392 -> 0.0311
+```
+
+By default LoRA puts adapters on the top 60% of the layers, here 4 of 7. Without an NVIDIA
+GPU, `tuning="qlora"` trains as `"lora"` and says so in a warning, so the same code runs on a
+laptop and on a GPU server.
+
+**Which layers.** Three settings say which layers of the base model are used and how they learn.
+Each takes a count, a fraction of the layers, or `"all"`:
+
+- `num_layers`: keep only the bottom layers; the layers above are never loaded, which saves
+  memory and time;
+- `trainable_layers`: train the top layers fully;
+- `lora_layers`: put adapters on the layers below those; `lora_rank` sets the adapters' size.
+
+**The decision head.** `head_layers` (2 by default) and `head_dim` (half the base model's width)
+set its size, `head_dropout` its dropout. `backbone_lr` and `head_lr` set the learning rates;
+sysone picks `backbone_lr` from the model family and what trains.
+
+Compare a few setups:
+
+```python
+setups = {
+    "lora on all layers, rank 16": dict(tuning="lora", lora_layers="all",
+                                        lora_rank=16),
+    "top layer full, lora on 3 below": dict(tuning="lora", trainable_layers=1,
+                                            lora_layers=3),
+    "bottom 5 layers, top 2 trained": dict(tuning="full", num_layers=5,
+                                           trainable_layers=2),
+    "full, with a larger head": dict(tuning="full", head_layers=4, head_dim=256),
+}
+for name, settings in setups.items():
+    candidate = SystemOneModel(
+        "jhu-clsp/ettin-encoder-17m", epochs=4,
+        device="cpu", seed=0, verbose=0, **settings,
+    )
+    results[name] = candidate.fit(train).evaluate(test)
+
+shown = {name: results[name] for name in ["full", "lora", *setups]}
+print(compare(shown, by="overall")[["accuracy", "log_loss"]])
+```
+
+```text
+                                 accuracy  log_loss
+full                             0.972222  0.054030
+lora                             0.971111  0.085526
+lora on all layers, rank 16      0.975556  0.059830
+top layer full, lora on 3 below  0.942222  0.124640
+bottom 5 layers, top 2 trained   0.707778  0.616696
+full, with a larger head         0.967778  0.065251
+```
+
+On this small dataset LoRA comes close to full tuning, adapters on every layer help a little,
+a larger head doesn't, and dropping the top layers costs the most. Which setup wins depends on the base model and the
+data, so compare on yours. [Choosing how to train](user_guide/training.md) has the details.
+
 ## Many texts, and other questions
 
 Pass a list of texts to answer them together, which is much faster than one at a time. Questions
 are given at prediction time, so you can ask any subset:
 
 ```python
-texts = ["Hello, this is about pricing for 40 more seats. It is just a question.",
-         "Hello, this is about a missing parcel. It is an emergency, everything is down."]
+texts = [
+    "Hello, this is about pricing for 40 more seats. It is just a question.",
+    "Hello, this is about a missing parcel. "
+    "It is an emergency, everything is down.",
+]
 for result in full.predict(texts, {"team": questions["team"]}):
-    print(result["answers"]["team"]["choice"], result["answers"]["team"]["answer_confidence"])
+    team = result["answers"]["team"]
+    print(team["choice"], team["answer_confidence"])
 ```
 
 ```text
@@ -288,15 +400,21 @@ other questions keep their hard labels:
 ```python
 def soft(row):
     expected = {q: a for q, a in row["expected"].items() if q != "team"}
-    return {**row, "expected": expected, "gold": {"team": {"probabilities": row["votes"]}}}
+    gold = {"team": {"probabilities": row["votes"]}}
+    return {**row, "expected": expected, "gold": gold}
 
 
-soft_model = SystemOneModel("jhu-clsp/ettin-encoder-17m", device="cpu", tuning="full", epochs=4, seed=0, verbose=0)
+soft_model = SystemOneModel(
+    "jhu-clsp/ettin-encoder-17m",
+    tuning="full", epochs=4,
+    device="cpu", seed=0, verbose=0,
+)
 soft_model.fit([soft(r) for r in train])
 
 disputed = "Hello, this is about a damaged delivery. It is a small issue."
 for name, m in [("hard labels", full), ("soft labels", soft_model)]:
-    print(name, m.predict(disputed, {"team": questions["team"]})["answers"]["team"]["probabilities"])
+    answer = m.predict(disputed, {"team": questions["team"]})["answers"]["team"]
+    print(name, answer["probabilities"])
 ```
 
 ```text
@@ -310,8 +428,9 @@ is 0 for identical distributions, 1 for completely different):
 
 ```python
 soft_test = [soft(r) for r in test]
-print(compare({"hard labels": full.evaluate(soft_test), "soft labels": soft_model.evaluate(soft_test)},
-              by="type", metric="distance"))
+reports = {"hard labels": full.evaluate(soft_test),
+           "soft labels": soft_model.evaluate(soft_test)}
+print(compare(reports, by="type", metric="distance"))
 ```
 
 ```text
@@ -333,9 +452,14 @@ import json
 
 with open("tickets.jsonl", "w") as f:
     for r in train:
-        f.write(json.dumps({"state": r["state"], "expected": r["expected"]}) + "\n")
+        record = {"state": r["state"], "expected": r["expected"]}
+        f.write(json.dumps(record) + "\n")
 
-from_file = SystemOneModel("jhu-clsp/ettin-encoder-17m", device="cpu", tuning="head", seed=0, verbose=0)
+from_file = SystemOneModel(
+    "jhu-clsp/ettin-encoder-17m",
+    tuning="head",
+    device="cpu", seed=0, verbose=0,
+)
 from_file.fit("tickets.jsonl", questions=questions)
 print(from_file.predict(texts[1], questions)["answers"]["team"]["choice"])
 ```
@@ -352,7 +476,11 @@ import pandas as pd
 table = pd.DataFrame([{"state": r["state"], "question_id": q, "answer": a}
                       for r in train for q, a in r["expected"].items()])
 print(table.head(3))
-from_table = SystemOneModel("jhu-clsp/ettin-encoder-17m", device="cpu", tuning="head", seed=0, verbose=0)
+from_table = SystemOneModel(
+    "jhu-clsp/ettin-encoder-17m",
+    tuning="head",
+    device="cpu", seed=0, verbose=0,
+)
 from_table.fit(table, questions=questions)
 print(from_table.predict(texts[1], questions)["answers"]["team"]["choice"])
 ```
@@ -389,14 +517,17 @@ threshold is marked `"abstained": True` (it still carries its answer and probabi
 model holds back on the vague tickets, where reviewers split three ways, and answers the rest:
 
 ```python
-answers = full.predict([r["state"] for r in test], {"team": questions["team"]}, abstain=thresholds)
+answers = full.predict([r["state"] for r in test], {"team": questions["team"]},
+                       abstain=thresholds)
 held_back = {}
 for result, row in zip(answers, test):
-    kind = {1.0: "clear", 0.7: "disputed"}.get(max(row["votes"].values()), "vague")
+    top_share = max(row["votes"].values())
+    kind = {1.0: "clear", 0.7: "disputed"}.get(top_share, "vague")
     counts = held_back.setdefault(kind, [0, 0])
     counts[0] += result["answers"]["team"]["abstained"]
     counts[1] += 1
-print({kind: "%d of %d abstained" % tuple(counts) for kind, counts in held_back.items()})
+print({kind: "%d of %d abstained" % tuple(counts)
+       for kind, counts in held_back.items()})
 ```
 
 ```text
@@ -408,7 +539,8 @@ questions:
 
 ```python
 report = full.evaluate(test, abstain=thresholds)
-print(compare({"answer all": full.evaluate(test), "abstain": report}, by="type", metric="accuracy"))
+reports = {"answer all": full.evaluate(test), "abstain": report}
+print(compare(reports, by="type", metric="accuracy"))
 print(compare({"abstain": report}, by="type", metric="coverage"))
 ```
 
@@ -461,12 +593,16 @@ Training on a large dataset can take hours, and a notebook can disconnect. With 
 when it finishes. Load the folder and call `fit` again to continue a run that stopped early:
 
 ```python
-run = SystemOneModel("jhu-clsp/ettin-encoder-17m", device="cpu", tuning="full", epochs=2, seed=0, verbose=0,
-                     checkpoint_dir="ticket-run", checkpoint_every=20)
+run = SystemOneModel(
+    "jhu-clsp/ettin-encoder-17m",
+    tuning="full", epochs=2,
+    checkpoint_dir="ticket-run", checkpoint_every=20,
+    device="cpu", seed=0, verbose=0,
+)
 run.fit(train)
 
 resumed = SystemOneModel.load("ticket-run", verbose=1)   # show progress
-resumed.set_params(epochs=3)     # one more epoch than the saved run: it continues, not restarts
+resumed.set_params(epochs=3)   # one more epoch than the saved run: it continues
 resumed.fit(train)
 ```
 
