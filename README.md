@@ -123,6 +123,42 @@ Questions are plain dicts, and rows can come from lists of dicts, `.jsonl`, `.cs
 [quickstart guide](https://sysone.readthedocs.io/en/latest/quickstart.html) walks through each
 step.
 
+## Serve it as an API
+
+The model you just saved can answer requests over HTTP. `sysone serve` puts it behind the
+System One API (`POST /v1/systemone`), the request and response shape of TypeSafe's Jev, so Jev
+clients and the `typesafe-sdk` work with it by changing only the base URL:
+
+```bash
+pip install "sysone[serve]"
+sysone serve sysone-support                        # the folder saved above, or a Hugging Face repo id
+```
+
+```bash
+curl http://127.0.0.1:8000/v1/systemone -H "Content-Type: application/json" -d '{
+  "state": "I was charged twice for the same invoice. Please fix it.",
+  "questions": {
+    "category": {"type": "choice", "instructions": "What is this customer conversation primarily about?",
+                 "criteria": ["account", "billing", "delivery", "refund", "technical"]},
+    "action":   {"type": "choice", "instructions": "What should the assistant do next with this conversation?",
+                 "criteria": ["answer_directly", "close_no_action", "escalate_to_human",
+                              "execute_refund", "request_information"]}}}'
+```
+
+The response holds the same `answers` as `model.predict`, plus the model's name and token usage.
+To share the model first, `model.push_to_hub("your-username/sysone-support")` uploads it with a
+model card, and `sysone serve your-username/sysone-support` serves it on any machine.
+
+- **Local by default:** the server listens on `127.0.0.1`; add `--host 0.0.0.0` to accept
+  requests from other machines.
+- **API key:** `--api-key-env SYSONE_API_KEY` requires `Authorization: Bearer <key>`, with the key
+  read from that environment variable.
+- **Abstention:** `--abstain 0.8` marks answers below 0.8 confidence as `"abstained": true`.
+- **Batching:** requests that arrive together share one forward pass.
+
+See [Serving](https://sysone.readthedocs.io/en/latest/user_guide/serving.html) for every option,
+the typesafe-sdk example and deployment notes.
+
 ## What `fit` does for you
 
 1. **Builds the prompt**: the text, the question and its options are laid out in one input; you
@@ -153,42 +189,37 @@ Labels can be one right answer, or a probability per option when several raters 
 
 ## Models
 
-| class | base models | default training |
-|---|---|---|
-| `EncoderModel` | [ModernBERT](https://huggingface.co/answerdotai/ModernBERT-base) (default), [EuroBERT](https://huggingface.co/EuroBERT/EuroBERT-210m), [mmBERT](https://huggingface.co/jhu-clsp/mmBERT-base) | every layer |
-| `DecoderModel` | [Qwen3](https://huggingface.co/Qwen/Qwen3-0.6B) (default), Llama, Mistral, Gemma 3 | QLoRA adapters |
+Any checkpoint of these families works by name. `EncoderModel` fully tunes every layer by
+default; `DecoderModel` trains QLoRA adapters (LoRA without an NVIDIA GPU).
 
-Pass any checkpoint of these families by name, such as `DecoderModel("Qwen/Qwen3-1.7B")`. If you
-don't know whether a model is an encoder or a decoder, `SystemOneModel` picks the class for you:
+| family | class | example checkpoints | notes |
+|---|---|---|---|
+| [ModernBERT](https://huggingface.co/answerdotai/ModernBERT-base) | `EncoderModel` | `answerdotai/ModernBERT-base` (default), `answerdotai/ModernBERT-large` | English |
+| [Ettin](https://huggingface.co/jhu-clsp/ettin-encoder-400m) | `EncoderModel` | `jhu-clsp/ettin-encoder-150m`, `jhu-clsp/ettin-encoder-400m`, `jhu-clsp/ettin-encoder-1b` | English; best measured so far |
+| [mmBERT](https://huggingface.co/jhu-clsp/mmBERT-base) | `EncoderModel` | `jhu-clsp/mmBERT-small`, `jhu-clsp/mmBERT-base` | 1,800+ languages |
+| [EuroBERT](https://huggingface.co/EuroBERT/EuroBERT-210m) | `EncoderModel` | `EuroBERT/EuroBERT-210m`, `EuroBERT/EuroBERT-610m`, `EuroBERT/EuroBERT-2.1B` | European and widely used languages |
+| [Qwen3](https://huggingface.co/Qwen/Qwen3-0.6B) | `DecoderModel` | `Qwen/Qwen3-0.6B` (default), `Qwen/Qwen3-1.7B`, `Qwen/Qwen3-4B` | multilingual |
+| [Llama](https://huggingface.co/meta-llama/Llama-3.2-1B) | `DecoderModel` | `meta-llama/Llama-3.2-1B`, `meta-llama/Llama-3.2-3B`, `HuggingFaceTB/SmolLM2-1.7B` | Meta's checkpoints are gated |
+| [Mistral](https://huggingface.co/mistralai/Mistral-7B-v0.3) | `DecoderModel` | `mistralai/Mistral-7B-v0.3`, `mistralai/Ministral-8B-Instruct-2410` | 7B and up: use a large GPU |
+| [Gemma 3](https://huggingface.co/google/gemma-3-1b-pt) | `DecoderModel` | `google/gemma-3-1b-pt`, `google/gemma-3-1b-it` | gated; text-only 1B sizes |
+
+`SystemOneModel` picks the class for you, so you don't need to know whether a model is an
+encoder or a decoder:
 
 ```python
 from sysone import SystemOneModel
 
-model = SystemOneModel("EuroBERT/EuroBERT-210m")   # an EncoderModel, with its defaults
+model = SystemOneModel("jhu-clsp/ettin-encoder-400m")   # an EncoderModel, with its defaults
+model = SystemOneModel("Qwen/Qwen3-1.7B")               # a DecoderModel
 ```
 
-More families are coming; a new one can also be added with one
+Fully tuned on the typed-decisions benchmark (1,200 training records), Ettin-encoder-400m
+reached 0.8025 accuracy, the smallest model at 0.80 or above on its
+[leaderboard](https://huggingface.co/datasets/LocalLLaMA/typed-decisions) of fine-tuned models;
+ModernBERT-large reached 0.788 and mmBERT-base 0.776 (one run each, the leaderboard's scoring).
+Gated checkpoints need their licence accepted on Hugging Face and a login. More families are
+coming; another can be added with one
 [architecture class](https://sysone.readthedocs.io/en/latest/user_guide/architectures.html).
-
-## Serve it as an API
-
-`sysone serve` puts any saved model behind the System One API (`POST /v1/systemone`), the request
-and response shape of TypeSafe's Jev, so Jev clients and the `typesafe-sdk` work with it by
-changing only the base URL:
-
-```bash
-pip install "sysone[serve]"
-sysone serve your-username/sysone-support          # a Hub repo id or a local folder
-```
-
-```bash
-curl http://127.0.0.1:8000/v1/systemone -H "Content-Type: application/json" -d '{
-  "state": "I was charged twice for the same invoice.",
-  "questions": {"refund": {"type": "noul", "instructions": "Is the customer asking for money back?"}}}'
-```
-
-Requests are batched, an API key can be required, and abstention thresholds can apply to every
-answer; see [Serving](https://sysone.readthedocs.io/en/latest/user_guide/serving.html).
 
 ## When you need more control
 
