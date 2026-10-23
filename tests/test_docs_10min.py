@@ -1,5 +1,5 @@
 """Runs every Python block of docs/10min.md, in order, so the tour stays runnable. Downloads
-Ettin-encoder-17m and takes a few minutes: run with `pytest -m slow`."""
+Ettin-encoder-17m and takes about four minutes: run with `pytest -m slow`."""
 
 import re
 from pathlib import Path
