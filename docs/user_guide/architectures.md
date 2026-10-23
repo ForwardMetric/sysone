@@ -2,7 +2,7 @@
 
 sysone supports these families of base models out of the box:
 
-| family | `model_type` | model class | examples |
+| family | `model_type` | picked class | examples |
 |---|---|---|---|
 | ModernBERT | `modernbert` | {class}`~sysone.EncoderModel` | `answerdotai/ModernBERT-base`, `answerdotai/ModernBERT-large`, `jhu-clsp/mmBERT-base` (multilingual) |
 | EuroBERT | `eurobert` | {class}`~sysone.EncoderModel` | `EuroBERT/EuroBERT-210m`, `EuroBERT/EuroBERT-610m` (multilingual) |
@@ -11,9 +11,10 @@ sysone supports these families of base models out of the box:
 | Mistral | `mistral` | {class}`~sysone.DecoderModel` | `mistralai/Mistral-7B-v0.3`, `mistralai/Ministral-8B-Instruct-2410` |
 | Gemma 3 | `gemma3_text` | {class}`~sysone.DecoderModel` | `google/gemma-3-1b-pt`, `google/gemma-3-1b-it` |
 
-Any checkpoint of a supported family works by name: `DecoderModel("Qwen/Qwen3-1.7B")`. The
-architecture is looked up from the checkpoint's `model_type`, and {class}`~sysone.SystemOneModel` uses it
-to pick `EncoderModel` or `DecoderModel` for you.
+Any checkpoint of a supported family works by name: `SystemOneModel("Qwen/Qwen3-1.7B")`. The
+architecture is looked up from the checkpoint's `model_type`, and {class}`~sysone.SystemOneModel`
+uses it to pick `EncoderModel` or `DecoderModel` for you. Ettin checkpoints use the ModernBERT
+architecture (`model_type` `modernbert`).
 
 Some notes:
 
@@ -34,7 +35,7 @@ how a question's tokens are arranged and where its vectors are read. Everything 
 freezing, adapters, quantization, masks, training) is shared.
 
 ```python
-from sysone import Architecture, DecoderModel, register_architecture
+from sysone import Architecture, SystemOneModel, register_architecture
 from sysone.layout import Pieces
 
 
@@ -59,7 +60,7 @@ class MyDecoderArchitecture(Architecture):
 
 
 register_architecture("mydecoder", MyDecoderArchitecture)
-model = DecoderModel("my-org/my-decoder-1b")
+model = SystemOneModel("my-org/my-decoder-1b")   # causal = True: a DecoderModel
 ```
 
 A decoder whose layers, attention and tokenizer resemble Qwen3's or Llama's can usually reuse

@@ -189,10 +189,17 @@ Labels can be one right answer, or a probability per option when several raters 
 
 ## Models
 
-Any checkpoint of these families works by name. `EncoderModel` fully tunes every layer by
-default; `DecoderModel` trains QLoRA adapters (LoRA without an NVIDIA GPU).
+Any checkpoint of these families works by name, and `SystemOneModel` picks the right class for
+it, so you don't need to know whether a model is an encoder or a decoder:
 
-| family | class | example checkpoints | notes |
+```python
+from sysone import SystemOneModel
+
+model = SystemOneModel("jhu-clsp/ettin-encoder-400m")   # an encoder: fully tunes every layer by default
+model = SystemOneModel("Qwen/Qwen3-1.7B")               # a decoder: QLoRA adapters (LoRA without an NVIDIA GPU)
+```
+
+| family | picked class | example checkpoints | notes |
 |---|---|---|---|
 | [ModernBERT](https://huggingface.co/answerdotai/ModernBERT-base) | `EncoderModel` | `answerdotai/ModernBERT-base` (default), `answerdotai/ModernBERT-large` | English |
 | [Ettin](https://huggingface.co/jhu-clsp/ettin-encoder-400m) | `EncoderModel` | `jhu-clsp/ettin-encoder-150m`, `jhu-clsp/ettin-encoder-400m`, `jhu-clsp/ettin-encoder-1b` | English; best measured so far |
@@ -202,16 +209,6 @@ default; `DecoderModel` trains QLoRA adapters (LoRA without an NVIDIA GPU).
 | [Llama](https://huggingface.co/meta-llama/Llama-3.2-1B) | `DecoderModel` | `meta-llama/Llama-3.2-1B`, `meta-llama/Llama-3.2-3B`, `HuggingFaceTB/SmolLM2-1.7B` | Meta's checkpoints are gated |
 | [Mistral](https://huggingface.co/mistralai/Mistral-7B-v0.3) | `DecoderModel` | `mistralai/Mistral-7B-v0.3`, `mistralai/Ministral-8B-Instruct-2410` | 7B and up: use a large GPU |
 | [Gemma 3](https://huggingface.co/google/gemma-3-1b-pt) | `DecoderModel` | `google/gemma-3-1b-pt`, `google/gemma-3-1b-it` | gated; text-only 1B sizes |
-
-`SystemOneModel` picks the class for you, so you don't need to know whether a model is an
-encoder or a decoder:
-
-```python
-from sysone import SystemOneModel
-
-model = SystemOneModel("jhu-clsp/ettin-encoder-400m")   # an EncoderModel, with its defaults
-model = SystemOneModel("Qwen/Qwen3-1.7B")               # a DecoderModel
-```
 
 Fully tuned on the typed-decisions benchmark (1,200 training records), Ettin-encoder-400m
 reached 0.8025 accuracy, the smallest model at 0.80 or above on its
@@ -226,9 +223,9 @@ coming; another can be added with one
 The defaults are meant to work without tuning, but every choice can be overridden:
 
 ```python
-from sysone import DecoderModel
+from sysone import SystemOneModel
 
-model = DecoderModel(
+model = SystemOneModel(
     "Qwen/Qwen3-1.7B",
     tuning="lora",            # "head", "lora", "qlora" or "full"
     num_layers=0.7,           # keep the bottom 70% of layers

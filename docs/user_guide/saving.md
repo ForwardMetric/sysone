@@ -5,9 +5,9 @@
 ```python
 model.save("ticket-model")
 
-from sysone import DecoderModel
-model = DecoderModel.load("ticket-model")
-model = DecoderModel.load("ticket-model", device="cpu", verbose=0)   # override runtime settings
+from sysone import SystemOneModel
+model = SystemOneModel.load("ticket-model")
+model = SystemOneModel.load("ticket-model", device="cpu", verbose=0)   # override runtime settings
 ```
 
 The folder holds everything needed to rebuild the model:

@@ -6,33 +6,34 @@ budgets, the head's size and how many examples fit in memory at once, is worked 
 
 ## Encoder or decoder
 
-| | {class}`~sysone.EncoderModel` | {class}`~sysone.DecoderModel` |
-|---|---|---|
-| base model | ModernBERT-base (150M parameters) | Qwen3-0.6B, bottom 70% of layers |
-| default training | `"full"`: every layer | `"qlora"`: adapters, 4-bit frozen weights |
-| reads text | in both directions | left to right |
-| choose it for | the best measured accuracy so far (0.79 on typed-decisions, fully tuned) | fine-tuning in little GPU memory, or a larger base model |
-
-Both take the same parameters. `EncoderModel` also runs EuroBERT and mmBERT, and
-`DecoderModel` runs Llama, Mistral and Gemma 3, as well as other sizes of each family, such as
-`DecoderModel("Qwen/Qwen3-1.7B")`; see [Base models](architectures.md) for the list.
-
-If you don't know or don't mind which kind a base model is, {class}`~sysone.SystemOneModel`
-picks the class for you:
+Name a base model and {class}`~sysone.SystemOneModel` builds the right class for it:
 
 ```python
 from sysone import SystemOneModel
 
-model = SystemOneModel("HuggingFaceTB/SmolLM2-1.7B")   # a DecoderModel, with DecoderModel's defaults
-model = SystemOneModel("EuroBERT/EuroBERT-210m")       # an EncoderModel
-model = SystemOneModel.load("my-model")                # a saved model of either kind
+model = SystemOneModel("jhu-clsp/ettin-encoder-400m")   # an encoder: an EncoderModel
+model = SystemOneModel("Qwen/Qwen3-1.7B")               # a decoder: a DecoderModel
+model = SystemOneModel.load("my-model")                 # a saved model of either kind
 ```
 
-For popular base models sysone already knows which kind they are; for others it reads the
-model's `config.json` (a few KB, no weights) to decide.
+The two classes take the same parameters and differ in their defaults, chosen for their kind of
+model:
 
-Using the wrong class, such as `EncoderModel("Qwen/Qwen3-0.6B")`, raises an error naming the
-right one: each class's defaults are chosen for its kind of model.
+| | encoder ({class}`~sysone.EncoderModel`) | decoder ({class}`~sysone.DecoderModel`) |
+|---|---|---|
+| families | ModernBERT, Ettin, mmBERT, EuroBERT | Qwen3, Llama, Mistral, Gemma 3 |
+| default training | `"full"`: every layer | `"qlora"`: adapters, 4-bit frozen weights |
+| layers kept | all | the bottom 70% |
+| reads text | in both directions | left to right |
+| choose it for | the best measured accuracy so far (0.80 on typed-decisions, Ettin-encoder-400m fully tuned) | fine-tuning in little GPU memory, or a larger base model |
+
+See [Base models](architectures.md) for checkpoints of each family. For popular base models
+sysone already knows which kind they are; for others it reads the model's `config.json` (a few
+KB, no weights) to decide. `SystemOneModel()` with no name builds an encoder on
+ModernBERT-base.
+
+You can also use `EncoderModel` or `DecoderModel` directly. Using the wrong one, such as
+`EncoderModel("Qwen/Qwen3-0.6B")`, raises an error naming the right one.
 
 ## How much of the model learns: `tuning`
 
@@ -59,9 +60,9 @@ Some rules of thumb:
 fraction (`0.6`) or `"all"`:
 
 ```python
-DecoderModel(tuning="lora", lora_layers="all")                  # adapters on every layer
-DecoderModel(tuning="lora", trainable_layers=2, lora_layers=8)  # top 2 fully, 8 below with adapters
-EncoderModel(num_layers=0.5, tuning="head")                    # half the layers, head only
+SystemOneModel("Qwen/Qwen3-0.6B", tuning="lora", lora_layers="all")                  # adapters on every layer
+SystemOneModel("Qwen/Qwen3-0.6B", tuning="lora", trainable_layers=2, lora_layers=8)  # top 2 fully, 8 below with adapters
+SystemOneModel("answerdotai/ModernBERT-base", num_layers=0.5, tuning="head")        # half the layers, head only
 ```
 
 ## When training stops
@@ -97,7 +98,8 @@ the same data continues where it stopped, exactly as if it hadn't been interrupt
 On a machine that may disconnect, such as a Colab runtime, turn on autosave:
 
 ```python
-model = EncoderModel(checkpoint_dir="/content/drive/MyDrive/run-1", checkpoint_every=500)
+model = SystemOneModel("answerdotai/ModernBERT-base", checkpoint_dir="/content/drive/MyDrive/run-1",
+                       checkpoint_every=500)
 model.fit("train.jsonl")
 ```
 
@@ -107,7 +109,7 @@ so a failed save can't damage the previous one, and comes with a `run.json` that
 step and the command to resume:
 
 ```python
-model = EncoderModel.load("/content/drive/MyDrive/run-1")
+model = SystemOneModel.load("/content/drive/MyDrive/run-1")
 model.fit("train.jsonl")   # continues from the last save
 ```
 
@@ -122,7 +124,7 @@ of the cost:
 
 ```python
 for lr in (3e-4, 1e-3, 3e-3):
-    model = DecoderModel(tuning="head", head_lr=lr, cache_dir="feature-cache").fit(rows)
+    model = SystemOneModel("Qwen/Qwen3-0.6B", tuning="head", head_lr=lr, cache_dir="feature-cache").fit(rows)
 ```
 
 Only questions not in the cache are computed. The folder stays under `cache_max_gb` (5 by
@@ -139,7 +141,7 @@ probabilities), and pushes the model toward the predictions that scored well. Th
 probabilities, especially against soft labels.
 
 ```python
-model = EncoderModel("jhu-clsp/ettin-encoder-400m", loss="rlcd")
+model = SystemOneModel("jhu-clsp/ettin-encoder-400m", loss="rlcd")
 ```
 
 | parameter | default | meaning |

@@ -11,15 +11,16 @@ Everything below is importable from `sysone`.
    :toctree: generated
    :nosignatures:
 
+   SystemOneModel
    EncoderModel
    DecoderModel
-   SystemOneModel
    NotFittedError
 ```
 
-{class}`EncoderModel` and {class}`DecoderModel` take the same parameters, listed on each page,
-and differ only in three defaults. {class}`SystemOneModel` is their shared base class, and
-`SystemOneModel(model_name)` returns whichever of the two suits a base model.
+`SystemOneModel(model_name)` returns whichever of {class}`EncoderModel` and
+{class}`DecoderModel` suits the base model, and `SystemOneModel.load(path)` loads a saved model of
+either kind. The two classes take the same parameters, listed on each page, and differ only in
+three defaults.
 
 ## Evaluation
 
