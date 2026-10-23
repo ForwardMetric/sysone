@@ -101,7 +101,7 @@ _RUN_PARAMS = ("batch_size", "validation_fraction", "validation_interval", "seed
                "shuffle_options", "label_smoothing", "ordinal_weight")
 # Added to the run settings only with loss="rlcd", so soft-ce runs keep the fingerprint they had
 # before rlcd existed and earlier checkpoints still resume.
-_RLCD_PARAMS = ("loss", "rlcd_weight", "rlcd_samples", "rlcd_noise", "rlcd_spherical")
+_RLCD_PARAMS = ("loss", "rlcd_weight", "rlcd_samples", "rlcd_noise", "rlcd_noise_end", "rlcd_spherical")
 
 
 class NotFittedError(RuntimeError):
@@ -236,16 +236,20 @@ class SystemOneModel:
     loss : {"soft-ce", "rlcd"}, default="soft-ce"
         Training objective. ``"soft-ce"``: cross-entropy against the (possibly soft) target
         distribution. ``"rlcd"`` (experimental): soft cross-entropy plus a policy-gradient term
-        that rewards noisy copies of the prediction with proper scoring rules (log, spherical, and
-        ranked probability for score questions), which tends to temper over-confidence. It
-        applies while training only; validation loss stays soft cross-entropy.
+        that rewards slightly noisy copies of the prediction with proper scoring rules (log,
+        spherical, and ranked probability for score questions). It applies while training only;
+        validation loss stays soft cross-entropy.
     rlcd_weight : float, default=1.0
         With ``loss="rlcd"``: weight of the policy-gradient term. 0 makes it ``"soft-ce"``.
-    rlcd_samples : int, default=8
+    rlcd_samples : int, default=4
         With ``loss="rlcd"``: noisy copies drawn per question for the policy gradient.
-    rlcd_noise : float, default=1.0
-        With ``loss="rlcd"``: standard deviation of the Gaussian noise added to the logits.
-    rlcd_spherical : float, default=1.5
+    rlcd_noise : float, default=0.4
+        With ``loss="rlcd"``: standard deviation of the Gaussian noise added to the logits at
+        the start of training. Large noise teaches over-confidence; keep it well below 1.
+    rlcd_noise_end : float, default=0.1
+        With ``loss="rlcd"``: the noise at the end of training; it moves linearly from
+        ``rlcd_noise`` to this over the run.
+    rlcd_spherical : float, default=0.75
         With ``loss="rlcd"``: weight of the spherical score next to the log score in the reward.
     ordinal_weight : float, default=1.0
         Weight of the ranked probability score added to the loss of score questions, so
@@ -398,9 +402,10 @@ class SystemOneModel:
         # objective and data
         loss: str = "soft-ce",
         rlcd_weight: float = 1.0,
-        rlcd_samples: int = 8,
-        rlcd_noise: float = 1.0,
-        rlcd_spherical: float = 1.5,
+        rlcd_samples: int = 4,
+        rlcd_noise: float = 0.4,
+        rlcd_noise_end: float = 0.1,
+        rlcd_spherical: float = 0.75,
         ordinal_weight: float = 1.0,
         label_smoothing: float = 0.0,
         shuffle_options="auto",
@@ -458,6 +463,7 @@ class SystemOneModel:
         self.rlcd_weight = rlcd_weight
         self.rlcd_samples = rlcd_samples
         self.rlcd_noise = rlcd_noise
+        self.rlcd_noise_end = rlcd_noise_end
         self.rlcd_spherical = rlcd_spherical
         self.ordinal_weight = ordinal_weight
         self.label_smoothing = label_smoothing
@@ -627,9 +633,10 @@ class SystemOneModel:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or value < 0:
                 raise ValueError("%s must be a number of at least 0, got %r" % (name, value))
-        if isinstance(self.rlcd_noise, bool) or not isinstance(self.rlcd_noise, Real) \
-                or not math.isfinite(self.rlcd_noise) or self.rlcd_noise <= 0:
-            raise ValueError("rlcd_noise must be a positive number, got %r" % (self.rlcd_noise,))
+        for name in ("rlcd_noise", "rlcd_noise_end"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or value <= 0:
+                raise ValueError("%s must be a positive number, got %r" % (name, value))
         if isinstance(self.rlcd_samples, bool) or not isinstance(self.rlcd_samples, int) or self.rlcd_samples < 2:
             raise ValueError("rlcd_samples must be an int of at least 2 (the baseline needs two), got %r"
                              % (self.rlcd_samples,))
@@ -997,6 +1004,7 @@ class SystemOneModel:
                       autocast_dtype=self._autocast_dtype(), ordinal_weight=float(self.ordinal_weight),
                       loss=self.loss, rlcd={"weight": float(self.rlcd_weight), "samples": int(self.rlcd_samples),
                                             "noise": float(self.rlcd_noise),
+                                            "noise_end": float(self.rlcd_noise_end),
                                             "spherical_weight": float(self.rlcd_spherical)})
         settings = TrainSettings(
             epochs=self.epochs, batch_size=self.batch_size,

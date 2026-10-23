@@ -25,7 +25,7 @@ from ._util import autocast, empty_device_cache, is_out_of_memory
 from .data import Example
 from .features import Features, collate_features, read_vectors, run_in_batches
 from .layout import Encoded, collate
-from .losses import decision_loss, rlcd_loss
+from .losses import decision_loss, rlcd_loss, rlcd_noise_at
 from .questions import TYPE_INDEX
 
 OPTIMIZERS = ("adamw", "adamw_8bit", "sgd")
@@ -101,6 +101,7 @@ class Network:
         self.ordinal_weight = ordinal_weight
         self.loss = loss
         self.rlcd = rlcd or {}
+        self.progress = 0.0  # fraction of training done, set by `train`; anneals the rlcd noise
         self.device = device
         self.backbone = backbone
         self.arch = arch
@@ -143,7 +144,9 @@ class Network:
         logits, mask, target = self.forward(items)
         ordinal = torch.tensor([it.qtype == TYPE_INDEX["score"] for it in items], device=logits.device)
         if self.loss == "rlcd" and self.head.training:
-            rows = rlcd_loss(logits, target, mask, ordinal, self.ordinal_weight, **self.rlcd)
+            settings = dict(self.rlcd)
+            settings["noise"] = rlcd_noise_at(self.progress, settings["noise"], settings.pop("noise_end"))
+            rows = rlcd_loss(logits, target, mask, ordinal, self.ordinal_weight, **settings)
         else:
             rows = decision_loss(logits, target, mask, ordinal, self.ordinal_weight)
         return rows, logits, target
@@ -437,6 +440,7 @@ def train(net: Network, train_items: Callable[[int], Sequence[TrainItem]], n_tra
             net.train(True)
             for s in range(first, steps_per_epoch):
                 chunk = [items[i] for i in order[s * settings.batch_size: (s + 1) * settings.batch_size]]
+                net.progress = state.step / max(1, total_steps - 1)
                 loss_sum = optimizer_step(chunk)
                 state.step += 1
                 state.running_loss += loss_sum

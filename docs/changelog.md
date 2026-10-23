@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.1
+
+- **`loss="rlcd"` fixed.** In 0.5.0 its noise was too large (a fixed 1.0): averaging a softmax over
+  that much noise flattens it, so the term rewarded scores sharper than the labels, and its
+  unnormalized advantage made training noisy. Ettin-encoder-400m on typed-decisions reached 0.64
+  accuracy with it against 0.80 with `soft-ce`. Now the noise starts at `rlcd_noise=0.4` and
+  shrinks to the new `rlcd_noise_end=0.1` over training, sums to zero over each question's
+  options, and advantages are normalized. Defaults change to `rlcd_samples=4` and
+  `rlcd_spherical=0.75`. An interrupted 0.5.0 `rlcd` run starts again rather than resuming.
+
 ## 0.5.0
 
 Serving, and an experimental calibration-oriented loss.
