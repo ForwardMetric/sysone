@@ -45,14 +45,14 @@ Rows can also come from a `.jsonl`, `.csv` or `.parquet` file, or a DataFrame; s
 ## 3. Train
 
 ```python
-from sysone import DecoderModel
+from sysone import SystemOneModel
 
-model = DecoderModel(tuning="head")
+model = SystemOneModel("Qwen/Qwen3-0.6B", tuning="head")
 model.fit(train_rows)
 ```
 
-`tuning="head"` trains only a small decision head on top of a frozen Qwen3-0.6B, which takes
-minutes even on a laptop. Leave it out to fine-tune the backbone too (QLoRA by default), which
+`SystemOneModel` picks the right class for the base model, here a decoder. `tuning="head"` trains
+only a small decision head on top of the frozen Qwen3-0.6B, which takes minutes even on a laptop. Leave it out to fine-tune the backbone too (QLoRA by default), which
 is more accurate and best done on a GPU. [Choosing how to train](user_guide/training.md) compares
 the options.
 
@@ -97,8 +97,8 @@ compare(results)                                   # accuracy per question type
 ```python
 model.save("ticket-model")
 
-from sysone import DecoderModel
-model = DecoderModel.load("ticket-model")
+from sysone import SystemOneModel
+model = SystemOneModel.load("ticket-model")
 ```
 
 The folder holds what was trained (the decision head, calibration, and any adapters or fully

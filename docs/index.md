@@ -17,7 +17,7 @@ scikit-learn. sysone handles tokenization, attention masks, layer freezing, adap
 training loop, early stopping and calibration.
 
 ```python
-from sysone import DecoderModel
+from sysone import SystemOneModel
 
 questions = {
     "team":     {"type": "choice", "instructions": "Which team should handle it?",
@@ -27,7 +27,7 @@ questions = {
     "refund":   {"type": "noul", "instructions": "Is the customer asking for a refund?"},
 }
 
-model = DecoderModel().fit(rows)        # rows: labelled examples, see the quickstart
+model = SystemOneModel("answerdotai/ModernBERT-base").fit(rows)   # rows: labelled examples, see the quickstart
 model.predict("My order arrived broken and I want my money back.", questions)
 ```
 
