@@ -616,8 +616,23 @@ Losses:
 - `soft-ce` (default): cross-entropy against the target distribution, over each row's own
   options. For hard labels this is ordinary cross-entropy. Score questions add a
   ranked-probability term (below).
-- `rlcd`: a policy-gradient term over noisy logit samples, rewarded by a proper scoring rule
-  (log, spherical, and ranked-probability for score questions), plus soft cross-entropy.
+- `rlcd` (experimental, milestone 5): soft cross-entropy (with the ranked-probability term) plus
+  `rlcd_weight` times a policy-gradient term. The logits are the mean of a Gaussian policy:
+  `rlcd_samples` noisy copies `z + rlcd_noise · ε` are drawn per question, each becomes a
+  distribution, and each is rewarded with proper scoring rules against the target: the log score,
+  plus `rlcd_spherical` times the spherical score, minus `ordinal_weight` times the ranked
+  probability score on score questions. The loss is REINFORCE with the group-mean reward as
+  baseline, `−mean_g (R_g − mean R) · log N(z_g; z, σ²)`, whose gradient follows the expected
+  reward of the noisy predictions. A proper scoring rule's expected reward peaks at the target
+  distribution, so the term favours predictions that stay right under perturbation, which tends to
+  temper over-confidence.
+  - It applies while training only. Validation loss, which early stopping and `target_loss` read,
+    stays soft cross-entropy, so it is deterministic and comparable between losses.
+  - Noise comes from torch's global generator, whose state the training state saves, so an
+    interrupted `rlcd` run resumes exactly. Its settings join the run fingerprint only with
+    `loss="rlcd"`, so `soft-ce` runs keep their fingerprints and earlier checkpoints still resume.
+  - Defaults (`rlcd_weight=1`, `rlcd_samples=8`, `rlcd_noise=1`, `rlcd_spherical=1.5`) are starting
+    points, not measured; the spherical weight follows a published run of the method.
 
 **Score questions are ordered.** Cross-entropy treats a score's levels as unrelated categories:
 predicting level 2 when the answer is 3 costs as much as predicting 0. For score questions the
@@ -1095,7 +1110,7 @@ where a tie in the gold label counts only its first option, which runs about one
 pass); a GPU CI job; `head="full"`; `loss="rlcd"`; per-category temperatures; training on many
 datasets before specialising.
 
-### Milestone 5: serving (0.5.0)
+### Milestone 5: serving and the `rlcd` loss (0.5.0)
 
 **Goal:** `sysone serve <model>` turns any saved sysone model into an HTTP API with the same
 request and response shape as TypeSafe's Jev (`POST /v1/systemone`), so existing Jev clients
@@ -1156,6 +1171,12 @@ Jev-style endpoints can score sysone models. Release as 0.5.0.
 abstention from the server and from the request; concurrent requests batched together and each
 answered with its own result; `/v1/models` and `/healthz`; the CLI's argument parsing and the
 missing-extra message.
+
+6. **The `rlcd` loss** (`loss="rlcd"`, experimental; see Losses). Added after serving because
+   the leaderboard measurements put sysone's calibration error (0.17) behind its accuracy, KL and
+   Brier, and a published `rlcd` run on ModernBERT-large lowered ECE from 0.214 to 0.141 with
+   slightly higher accuracy. It is measured against `soft-ce` on Ettin-encoder-400m, same seed,
+   before it is recommended.
 
 **Not in scope:** several models per server (run one server per model); streaming; HTTPS (put
 a reverse proxy in front); rate limiting and usage accounting; a request queue that survives a

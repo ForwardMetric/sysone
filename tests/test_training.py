@@ -85,11 +85,13 @@ def test_early_stopping_restores_the_best_check(tiny_models):
     assert model.report_["validation"]["loss"] == pytest.approx(best, rel=1e-4)
 
 
+@pytest.mark.parametrize("loss", ["soft-ce", "rlcd"])
 @pytest.mark.parametrize("tuning", ["head", "lora"])
 @pytest.mark.parametrize("interrupt_at", [3, 9, 14])
-def test_interrupted_run_resumes_exactly(tiny_models, monkeypatch, tuning, interrupt_at, tmp_path):
+def test_interrupted_run_resumes_exactly(tiny_models, monkeypatch, tuning, interrupt_at, loss, tmp_path):
     rows = make_rows(40)
-    params = dict(tuning=tuning, validation_interval=2, early_stopping=True, n_iter_no_change=50)
+    # rlcd draws noise every step, so resuming exactly also needs the random state restored
+    params = dict(tuning=tuning, validation_interval=2, early_stopping=True, n_iter_no_change=50, loss=loss)
     reference = _model("qwen3", tiny_models["qwen3"], **params).fit(rows)
 
     model = _model("qwen3", tiny_models["qwen3"], **params)

@@ -129,6 +129,31 @@ Only questions not in the cache are computed. The folder stays under `cache_max_
 default) by deleting the least recently used sets; {func}`~sysone.cache_info` lists them and
 {func}`~sysone.clear_cache` deletes them.
 
+## The training objective: `loss="rlcd"` (experimental)
+
+By default sysone minimises cross-entropy against the labels (`loss="soft-ce"`). `loss="rlcd"`
+adds a second term: it perturbs the model's scores with noise several times per question, rewards
+each perturbed prediction with proper scoring rules (rules that reward honest probabilities), and
+pushes the model toward the predictions that scored well. The aim is better-calibrated
+probabilities, especially against soft labels, where `soft-ce` alone tends to leave answers
+slightly over- or under-confident.
+
+```python
+model = EncoderModel("jhu-clsp/ettin-encoder-400m", loss="rlcd")
+```
+
+| parameter | default | meaning |
+|---|---|---|
+| `rlcd_weight` | 1.0 | weight of the added term; 0 is plain `soft-ce` |
+| `rlcd_samples` | 8 | noisy copies per question |
+| `rlcd_noise` | 1.0 | size of the noise added to the scores |
+| `rlcd_spherical` | 1.5 | weight of the spherical score next to the log score |
+
+- It changes training only: validation loss, early stopping and predictions work as before.
+- Each step costs a little more, mainly in the head; the backbone runs once per step either way.
+- It is experimental: the defaults are starting points, and whether it beats `soft-ce` on your
+  data is worth checking with `evaluate`, comparing `ece`, `log_loss` and `accuracy`.
+
 ## Score questions and level order
 
 Score questions have ordered levels, so predicting "major" when the answer is "critical" is a
