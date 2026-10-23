@@ -263,7 +263,7 @@ explains when each setting matters, and the
 - [Examples](https://sysone.readthedocs.io/en/latest/examples.html): notebooks on public
   datasets, runnable on Google Colab.
 - [Changelog](https://sysone.readthedocs.io/en/latest/changelog.html): sysone is in early
-  development (0.4), and the API may change between minor versions.
+  development (0.5), and the API may change between minor versions.
 
 ## Contributing
 

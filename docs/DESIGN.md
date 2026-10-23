@@ -1110,7 +1110,7 @@ where a tie in the gold label counts only its first option, which runs about one
 pass); a GPU CI job; `head="full"`; `loss="rlcd"`; per-category temperatures; training on many
 datasets before specialising.
 
-### Milestone 5: serving and the `rlcd` loss (0.5.0)
+### Milestone 5: serving and the `rlcd` loss (done, 0.5.0)
 
 **Goal:** `sysone serve <model>` turns any saved sysone model into an HTTP API with the same
 request and response shape as TypeSafe's Jev (`POST /v1/systemone`), so existing Jev clients
