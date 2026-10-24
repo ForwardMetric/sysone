@@ -65,6 +65,23 @@ SystemOneModel("Qwen/Qwen3-0.6B", tuning="lora", trainable_layers=2, lora_layers
 SystemOneModel("answerdotai/ModernBERT-base", num_layers=0.5, tuning="head")        # half the layers, head only
 ```
 
+### Looping the top layers: `network_loops` (experimental)
+
+`network_loops` runs the top `loop_layers` layers more than once, with the same weights, before
+the head reads them: more depth without more parameters. Each pass reads the previous pass's
+output. `loop_layers` takes a count, a fraction of the kept layers or `"all"`, and defaults to
+the top quarter:
+
+```python
+SystemOneModel("jhu-clsp/ettin-encoder-150m", tuning="full",
+               network_loops=2, loop_layers=0.25)   # top quarter runs twice
+```
+
+The looped layers must train, so it needs `tuning="full"`, `"lora"` or `"qlora"`, and every
+looped layer must be fully trained or carry adapters. Each extra pass costs the looped layers'
+compute again, in training and in prediction. A model predicts with the loops it was trained
+with.
+
 ## When training stops
 
 Training ends at whichever comes first:

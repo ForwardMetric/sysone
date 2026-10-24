@@ -1204,6 +1204,39 @@ concurrent async requests. Its response schema is where the `/v1/models` shape a
 locations above come from: the design first guessed an OpenAI-style model list and locations
 without the type.
 
+### Milestone 7: looping the network (in progress, 0.7.0)
+
+**Goal:** more depth without more parameters. The top `loop_layers` kept layers of the backbone
+run `network_loops` times with the same weights before the head reads them, so every token's
+vector is reprocessed, not just the head's read of it. Measured against the same model without
+loops before it is recommended.
+
+**Design** (agreed before building):
+- **What loops:** a block of the top K kept layers, `loop_layers` (an int, a fraction of the kept
+  layers or `"all"`, default 0.25), run R = `network_loops` times (default 1, today's model).
+  Lower layers run once and keep their pretrained job of reading tokens; only the looped block
+  has to learn to read its own output.
+- **Each pass reads the previous pass's output**, as if the block were stacked R times; no
+  re-injection of the block's input and no new parameters.
+- **Weights are shared exactly** across passes. The looped layers must train (fully or with
+  adapters), so `tuning="head"` and a block reaching below `trainable_layers + lora_layers` are
+  errors.
+- **Loss on the last pass, backpropagated through every pass.** Activation memory for the block
+  grows R×; the gradient-checkpointing estimate counts the extra K × (R − 1) layer passes.
+- **Fixed R:** training and prediction use the same value; predicting after changing
+  `network_loops` is an error, and fitting again starts over (both settings are structural).
+- **Implementation:** `sysone.looping`. While the backbone runs, its layer list is swapped for
+  one naming the block's layers R times, and `config.num_hidden_layers` and `config.layer_types`
+  are extended to match (decoders read both by position). Both are restored afterwards, so
+  saving, loading and adapters see the plain model. `save` records K in `fitted`; `load`
+  restores the loop.
+- **Fingerprint:** both settings join the run fingerprint only when `network_loops` isn't 1, so
+  earlier checkpoints still resume.
+
+**Experiment:** Ettin-encoder-17m locally (Apple GPU), then a notebook on Ettin-encoder-150m with
+`tuning="full"`: R ∈ {1, 2, 3} × K ∈ {0.25, 0.5}, scored as the typed-decisions leaderboard does;
+the best setting confirmed on 400m.
+
 ## Open items
 
 - Whether bitsandbytes supports 4-bit training on Apple Silicon yet needs checking. If it does,

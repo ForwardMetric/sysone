@@ -10,6 +10,7 @@ from torch import nn
 
 from .._util import quiet_transformers, resolve_count
 from ..layout import Pieces, attention_mask
+from ..looping import looped
 
 
 def encode_text(tokenizer, text: str) -> list[int]:
@@ -196,9 +197,10 @@ class Architecture(ABC):
 
     def hidden_states(self, model: nn.Module, batch: dict[str, torch.Tensor]) -> torch.Tensor:
         masks = self.attention(model, batch["real"], batch["position_ids"], batch["option_ids"])
-        out = model(input_ids=batch["input_ids"], attention_mask=masks, position_ids=batch["position_ids"],
-                    use_cache=False) if self.causal else \
-            model(input_ids=batch["input_ids"], attention_mask=masks, position_ids=batch["position_ids"])
+        with looped(model, self.layers(model)):
+            out = model(input_ids=batch["input_ids"], attention_mask=masks, position_ids=batch["position_ids"],
+                        use_cache=False) if self.causal else \
+                model(input_ids=batch["input_ids"], attention_mask=masks, position_ids=batch["position_ids"])
         return out.last_hidden_state
 
     def name(self) -> str:

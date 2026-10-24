@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased (0.7.0)
+
+- **`network_loops`** (experimental): the top `loop_layers` layers of the backbone (default the
+  top quarter) run `network_loops` times with the same weights, giving more depth without more
+  parameters. The looped layers must train, so it needs `tuning="full"`, `"lora"` or `"qlora"`.
+  Saved models keep their loops; runs without loops keep their fingerprint and still resume.
+
 ## 0.5.2
 
 Documentation; no change to the library.

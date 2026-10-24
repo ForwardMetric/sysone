@@ -42,6 +42,7 @@ from .evaluation import score, scored_items, thresholds_for_accuracy
 from .features import cache_bytes, collate_features, extract
 from .heads import CompactHead
 from .layout import LAYOUTS, Encoded
+from .looping import loop_of, set_loop
 from .losses import LOSSES
 from .prompts import PromptFormat
 from .questions import QUESTION_TYPES
@@ -92,13 +93,17 @@ START_MICRO_BATCH = 16
 _STRUCTURAL = ("model_name", "revision", "architecture", "num_layers", "layout", "max_state_tokens",
                "max_option_tokens", "max_len", "head", "head_layers", "head_dim", "head_dropout",
                "precision", "device", "tuning", "trainable_layers", "lora_layers", "train_embeddings",
-               "lora_rank", "lora_alpha", "lora_dropout", "lora_targets", "quant_bits", "quant_type")
+               "lora_rank", "lora_alpha", "lora_dropout", "lora_targets", "quant_bits", "quant_type",
+               "network_loops", "loop_layers")
 # Adapter settings that only matter for tuning="lora" / "qlora".
 _ADAPTER_PARAMS = ("lora_rank", "lora_alpha", "lora_dropout", "lora_targets", "quant_bits", "quant_type")
 # Settings that shape a training run. A saved run resumes only if these and the data are unchanged.
 _RUN_PARAMS = ("batch_size", "validation_fraction", "validation_interval", "seed", "balance", "optimizer",
                "scheduler", "warmup_ratio", "backbone_lr", "head_lr", "weight_decay", "grad_clip",
                "shuffle_options", "label_smoothing", "ordinal_weight")
+# Added to the run settings only when the network loops, so runs without loops keep the fingerprint
+# they had before network_loops existed and earlier checkpoints still resume.
+_NETWORK_LOOP_PARAMS = ("network_loops", "loop_layers")
 # Added to the run settings only with loss="rlcd", so soft-ce runs keep the fingerprint they had
 # before rlcd existed and earlier checkpoints still resume.
 _RLCD_PARAMS = ("loss", "rlcd_weight", "rlcd_samples", "rlcd_noise", "rlcd_noise_end", "rlcd_spherical")
@@ -166,6 +171,14 @@ class SystemOneModel:
         ``tuning`` sets (0.6 for ``"lora"`` and ``"qlora"``). Only valid with adapters.
     train_embeddings : bool, default=False
         Also train the token embeddings. Not valid with ``tuning="head"``.
+    network_loops : int, default=1
+        How many times the top ``loop_layers`` layers run, with the same weights, before the head
+        reads them: more depth without more parameters. Each pass reads the previous pass's
+        output. ``1`` runs every layer once. The looped layers must train (fully or with
+        adapters), so ``tuning="head"`` can't loop. Training and prediction use the same value.
+    loop_layers : int, float or "all", default=0.25
+        With ``network_loops`` above 1: the top kept layers that loop. A fraction is of the kept
+        layers. Ignored when ``network_loops=1``.
     layout : {"parallel", "sequential"}, default="parallel"
         How a question's options are placed in the sequence. ``"parallel"`` gives every option
         the same positions and keeps options from attending to each other, so answers don't
@@ -366,6 +379,8 @@ class SystemOneModel:
         trainable_layers=None,
         lora_layers=None,
         train_embeddings: bool = False,
+        network_loops: int = 1,
+        loop_layers=0.25,
         layout: str = "parallel",
         # length limits
         max_state_tokens="auto",
@@ -431,6 +446,8 @@ class SystemOneModel:
         self.trainable_layers = trainable_layers
         self.lora_layers = lora_layers
         self.train_embeddings = train_embeddings
+        self.network_loops = network_loops
+        self.loop_layers = loop_layers
         self.layout = layout
         self.max_state_tokens = max_state_tokens
         self.max_option_tokens = max_option_tokens
@@ -642,6 +659,16 @@ class SystemOneModel:
                              % (self.rlcd_samples,))
         if self.cache_features not in ("auto", True, False):
             raise ValueError("cache_features must be 'auto', True or False, got %r" % (self.cache_features,))
+        if isinstance(self.network_loops, bool) or not isinstance(self.network_loops, int) or self.network_loops < 1:
+            raise ValueError("network_loops must be a positive integer, got %r" % (self.network_loops,))
+        if self.network_loops > 1:
+            if self.tuning == "head":
+                raise ValueError("network_loops=%d needs the looped layers to train, but tuning='head' freezes the "
+                                 "backbone; use tuning='full', 'lora' or 'qlora'" % self.network_loops)
+            k = self.loop_layers
+            if not (k == "all" or isinstance(k, int) and not isinstance(k, bool) and k >= 1
+                    or isinstance(k, float) and 0 < k <= 1):
+                raise ValueError("loop_layers must be a positive int, a fraction in (0, 1] or 'all', got %r" % (k,))
         if self.tuning in ("head", "full") and self.lora_layers not in (None, 0):
             raise ValueError("lora_layers=%r needs tuning='lora' or 'qlora', not %r" % (self.lora_layers, self.tuning))
         if self.tuning == "qlora" and self.trainable_layers not in (None, 0):
@@ -728,10 +755,26 @@ class SystemOneModel:
         kept = resolve_count(self.num_layers, total, "num_layers")
         return layer_plan(tuning, kept, self.trainable_layers, self.lora_layers, self.train_embeddings)
 
+    def _loop_layers(self, plan: LayerPlan) -> int:
+        """How many top layers loop (0 when nothing loops), checked against what trains."""
+        if self.network_loops == 1:
+            return 0
+        k = resolve_count(self.loop_layers, plan.n_layers, "loop_layers")
+        if k < 1:
+            raise ValueError("loop_layers=%r keeps no layer to loop" % (self.loop_layers,))
+        trained = plan.n_full + plan.n_lora
+        if k > trained:
+            raise ValueError("loop_layers=%r loops the top %d layers, but only the top %d train (trainable_layers + "
+                             "lora_layers); a looped layer must train to learn to read its own output"
+                             % (self.loop_layers, k, trained))
+        return k
+
     def _setup(self, examples: list[Example]) -> None:
         tuning = effective_tuning(self.tuning, resolve_device(self.device), stacklevel=3)
         self.plan_ = self._plan(tuning)
+        loop_layers = self._loop_layers(self.plan_)
         self._load_backbone(self.num_layers, self.revision, tuning)
+        set_loop(self.backbone_, loop_layers, self.network_loops)
         if self.plan_.n_lora:
             add_adapters(self.backbone_, lora_config(self.architecture_, self.backbone_, self.plan_, self.lora_targets,
                                                      self.lora_rank, self.lora_alpha, self.lora_dropout))
@@ -754,6 +797,8 @@ class SystemOneModel:
             "%d fully trained layers" % plan.n_full if plan.n_full else "",
             "adapters on %d layers" % plan.n_lora if plan.n_lora else "",
             "embeddings" if plan.train_embeddings else "") if part)
+        if loop_layers:
+            trains += "; top %d layers loop %d times" % (loop_layers, self.network_loops)
         weights = str(self.dtype_).replace("torch.", "")
         if self.tuning_ == "qlora":  # frozen weights are stored quantized; compute runs in half precision
             compute = "bfloat16" if self.dtype_ == torch.float32 else weights
@@ -789,7 +834,8 @@ class SystemOneModel:
             h.update(json.dumps([ex.state, ex.qid, q.type, q.instructions, list(q.keys), list(q.texts), ex.target,
                                  ex.category], default=str).encode())
         params = self.get_params()
-        keys = _RUN_PARAMS + (_RLCD_PARAMS if self.loss == "rlcd" else ())
+        keys = _RUN_PARAMS + (_NETWORK_LOOP_PARAMS if self.network_loops != 1 else ()) \
+            + (_RLCD_PARAMS if self.loss == "rlcd" else ())
         h.update(json.dumps({k: params[k] for k in keys}, sort_keys=True, default=str).encode())
         return h.hexdigest()
 
@@ -970,8 +1016,9 @@ class SystemOneModel:
                 for group, named in backbone_groups.items() if named)))
             lengths = sorted(len(encoder.encode(ex.state, ex.question).input_ids) for ex in train_ex)
             seq_len = lengths[min(len(lengths) - 1, int(0.95 * len(lengths)))]
+            loop_layers, loops = loop_of(self.backbone_)
             checkpointing = wants_checkpointing(self.gradient_checkpointing, plan, self.backbone_, seq_len,
-                                                min(micro, self.batch_size))
+                                                min(micro, self.batch_size), extra_layers=loop_layers * (loops - 1))
             if checkpointing:
                 self.backbone_.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
                 self._log("gradient checkpointing is on")
@@ -1123,6 +1170,10 @@ class SystemOneModel:
             raise NotFittedError("%s is not fitted: call fit() or load a saved model with %s.load() before "
                                  "predicting; an untrained decision head gives noise"
                                  % (type(self).__name__, type(self).__name__))
+        loops = loop_of(self.backbone_)[1]
+        if self.network_loops != loops:
+            raise ValueError("network_loops=%d, but the model was trained with %d; set it back, or fit again"
+                             % (self.network_loops, loops))
 
     def predict(self, X, questions: Mapping | None = None, abstain=None):
         """Answer typed questions about one or more states.
@@ -1391,6 +1442,7 @@ class SystemOneModel:
                 "trainable_layers": self.plan_.n_full,
                 "lora_layers": self.plan_.n_lora,
                 "train_embeddings": self.plan_.train_embeddings,
+                "loop_layers": loop_of(self.backbone_)[0],
             },
             "history": self.history_,
             "report": getattr(self, "report_", None),
@@ -1528,6 +1580,7 @@ class SystemOneModel:
             raise ValueError("the base model's hidden size changed since this model was saved")
         model.plan_ = LayerPlan(fitted["num_layers"], fitted.get("trainable_layers", 0), fitted.get("lora_layers", 0),
                                 fitted.get("train_embeddings", False))
+        set_loop(model.backbone_, fitted.get("loop_layers", 0), model.network_loops)
         if (path / ADAPTER_DIR).is_dir():
             load_adapter(model.backbone_, path / ADAPTER_DIR)
         if (path / BACKBONE_FILE).is_file():

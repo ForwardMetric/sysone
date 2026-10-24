@@ -191,19 +191,20 @@ def set_trainable(arch: Architecture, backbone: nn.Module, plan: LayerPlan) -> d
     return groups
 
 
-def wants_checkpointing(setting, plan: LayerPlan, backbone: nn.Module, seq_len: int, micro_batch: int) -> bool:
+def wants_checkpointing(setting, plan: LayerPlan, backbone: nn.Module, seq_len: int, micro_batch: int,
+                        extra_layers: int = 0) -> bool:
     """Whether to turn on gradient checkpointing.
 
     "auto" turns it on when the activations kept for the backward pass would take more memory
     than the backbone's weights: about `34·s·h + 5·a·s²` bytes per example and layer in half
-    precision, for the layers gradients flow through.
+    precision, for the layers gradients flow through, plus `extra_layers` passes of looped layers.
     """
     if setting != "auto":
         return bool(setting)
     if not plan.learns:
         return False
     config = backbone.config
-    layers = plan.n_layers - plan.lowest_trained
+    layers = plan.n_layers - plan.lowest_trained + extra_layers
     per_layer = 34 * seq_len * config.hidden_size + 5 * config.num_attention_heads * seq_len * seq_len
     activations = micro_batch * layers * per_layer
     weights = sum(p.numel() * p.element_size() for p in backbone.parameters())
